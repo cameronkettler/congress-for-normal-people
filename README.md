@@ -48,7 +48,7 @@ tests/                 Backend and workflow tests
    - Web UI: http://localhost:3000
    - API docs: http://localhost:8000/docs
 
-The app runs with deterministic demo data when external API keys are not configured. Add `CONGRESS_API_KEY`, `FEC_API_KEY`, and email settings in `.env` to connect real providers.
+The app runs with deterministic demo data when external API keys are not configured. Add `CONGRESS_API_KEY`, `FEC_API_KEY`, `LOBBYING_DISCLOSURE_API_KEY`, and email settings in `.env` to connect real providers.
 
 ## API Highlights
 

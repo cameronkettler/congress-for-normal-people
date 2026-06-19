@@ -8,7 +8,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./civic_pulse.db"
     congress_api_key: str | None = None
     fec_api_key: str | None = None
-    lobbying_disclosure_base_url: str = "https://lda.senate.gov/api/v1"
+    lobbying_disclosure_api_key: str | None = None
+    lobbying_disclosure_base_url: str = "https://lda.gov/api/v1"
     lobbying_api_live: bool = False
     monitoring_topics: str = (
         "Artificial Intelligence,Healthcare,Housing,Energy,Defense,Technology,Privacy"

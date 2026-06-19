@@ -14,9 +14,14 @@ class LobbyingDisclosureClient:
             return self._demo_activity(query)
 
         url = f"{self.settings.lobbying_disclosure_base_url}/filings/"
+        headers = self._auth_headers()
         try:
             async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.get(url, params={"q": query, "page_size": 5})
+                response = await client.get(
+                    url,
+                    headers=headers,
+                    params={"filing_specific_lobbying_issues": query, "page_size": 5},
+                )
                 response.raise_for_status()
                 results = response.json().get("results", [])
         except httpx.HTTPError:
@@ -28,6 +33,11 @@ class LobbyingDisclosureClient:
             "registrations": results,
             "confidence": "medium" if results else "low",
         }
+
+    def _auth_headers(self) -> dict[str, str]:
+        if not self.settings.lobbying_disclosure_api_key:
+            return {}
+        return {"Authorization": f"Token {self.settings.lobbying_disclosure_api_key}"}
 
     def _demo_activity(self, query: str) -> dict[str, Any]:
         return {

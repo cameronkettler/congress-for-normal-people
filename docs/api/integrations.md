@@ -24,7 +24,9 @@ Configure with `FEC_API_KEY`.
 
 - `search_activity(query)`: Searches registrations and filings related to bill title or policy terms.
 
-Configure with `LOBBYING_DISCLOSURE_BASE_URL`.
+Configure with `LOBBYING_DISCLOSURE_API_KEY`, `LOBBYING_DISCLOSURE_BASE_URL`, and
+`LOBBYING_API_LIVE=true`. Authenticated requests send `Authorization: Token <key>` and use the
+LDA filings `filing_specific_lobbying_issues` filter.
 
 ## Demo Mode
 

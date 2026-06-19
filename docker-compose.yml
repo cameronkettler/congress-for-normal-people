@@ -1,6 +1,7 @@
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:17
+    container_name: civic_pulse_db
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-civic_pulse}
       POSTGRES_USER: ${POSTGRES_USER:-civic_pulse}
@@ -8,7 +9,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-civic_pulse} -d ${POSTGRES_DB:-civic_pulse}"]
       interval: 5s
@@ -22,7 +23,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://civic_pulse:civic_pulse@db:5432/civic_pulse}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-civic_pulse}:${POSTGRES_PASSWORD:-civic_pulse}@db:5432/${POSTGRES_DB:-civic_pulse}
     ports:
       - "8000:8000"
     depends_on:
@@ -45,4 +46,4 @@ services:
       - api
 
 volumes:
-  postgres-data:
+  postgres_data:

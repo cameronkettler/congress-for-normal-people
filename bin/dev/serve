@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+COMMAND="${1:-up}"
+
+cd "$ROOT_DIR"
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Docker CLI was not found. Install/start Docker Desktop, then reopen your terminal." >&2
+  exit 1
+fi
+
+require_env() {
+  if [[ ! -f ".env" ]]; then
+    echo "Missing .env. Copy .env.example to .env before starting the stack." >&2
+    exit 1
+  fi
+}
+
+case "$COMMAND" in
+  up)
+    require_env
+    docker compose up --build -d
+    docker compose ps
+    ;;
+  down)
+    docker compose down
+    ;;
+  restart)
+    require_env
+    docker compose down
+    docker compose up --build -d
+    docker compose ps
+    ;;
+  status)
+    docker compose ps
+    ;;
+  logs)
+    docker compose logs -f "${@:2}"
+    ;;
+  *)
+    echo "Usage: bin/dev/serve [up|down|restart|status|logs]" >&2
+    exit 1
+    ;;
+esac

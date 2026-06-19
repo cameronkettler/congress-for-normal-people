@@ -83,6 +83,26 @@ Tests:
 pytest
 ```
 
+## Dev Scripts
+
+Docker lifecycle helpers live in `bin/dev`.
+
+PowerShell:
+
+```powershell
+.\bin\dev\serve.ps1 up
+.\bin\dev\serve.ps1 down
+```
+
+Bash:
+
+```bash
+./bin/dev/serve up
+./bin/dev/serve down
+```
+
+Supported commands are `up`, `down`, `restart`, `status`, and `logs`.
+
 ## Production Notes
 
 This repository is intentionally modular. Provider clients are isolated under `packages/ingestion`, the workflows live under `packages/agents`, persistence is under `packages/db`, and the API only coordinates use cases. The next production steps would be adding migrations, Redis/Celery workers, user authentication, durable notification queues, and stricter source citation storage.

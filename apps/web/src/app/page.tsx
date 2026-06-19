@@ -16,9 +16,17 @@ type LookupResponse = {
   finance: { patterns?: string[]; top_industries?: string[]; confidence?: string };
   generated_summary: string;
   generated_analysis: string;
-  stakeholders: { possible_supporters: string[]; possible_opponents: string[] };
+  stakeholders: {
+    possible_supporters: StakeholderInsight[];
+    possible_opponents: StakeholderInsight[];
+  };
   caveats: string[];
   confidence: string;
+};
+
+type StakeholderInsight = {
+  name: string;
+  context: string;
 };
 
 type MonitoringBill = {
@@ -73,9 +81,17 @@ export default function Home() {
         body: JSON.stringify({ bill_id: billId })
       });
       const payload = await response.json();
+      if (!response.ok) {
+        setLookup(null);
+        setStatus(payload.detail ?? "Lookup failed");
+        return;
+      }
       setLookup(payload);
       setStatus("Report generated");
       await loadRecent();
+    } catch {
+      setLookup(null);
+      setStatus("Could not reach the API");
     } finally {
       setLoading(false);
     }
@@ -170,8 +186,14 @@ export default function Home() {
                 </section>
 
                 <div className="grid gap-3 md:grid-cols-2">
-                  <StakeholderList title="Possible Support" items={lookup.stakeholders.possible_supporters} />
-                  <StakeholderList title="Possible Scrutiny" items={lookup.stakeholders.possible_opponents} />
+                  <StakeholderList
+                    title="Related Lobbying Activity"
+                    items={lookup.stakeholders.possible_supporters}
+                  />
+                  <StakeholderList
+                    title="Additional Related Activity"
+                    items={lookup.stakeholders.possible_opponents}
+                  />
                 </div>
               </>
             ) : (
@@ -261,14 +283,15 @@ function Metric({ label, value, compact = false }: { label: string; value: strin
   );
 }
 
-function StakeholderList({ title, items }: { title: string; items: string[] }) {
+function StakeholderList({ title, items }: { title: string; items: StakeholderInsight[] }) {
   return (
     <section className="rounded border border-line bg-panel p-3">
       <h4 className="mb-2 text-sm font-semibold uppercase text-slate-500">{title}</h4>
       <ul className="grid gap-2 text-sm">
-        {items.map((item) => (
-          <li key={item} className="leading-5">
-            {item}
+        {items.map((item, index) => (
+          <li key={`${item.name}-${index}`} className="leading-5">
+            <div className="font-semibold">{item.name}</div>
+            <div className="mt-1 text-xs leading-5 text-slate-600">{item.context}</div>
           </li>
         ))}
       </ul>

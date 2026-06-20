@@ -5,6 +5,7 @@ from packages.db.models import (
     GeneratedReport,
     User,
     UserInterest,
+    UserProfile,
     UserSession,
     UserTopicPreference,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "GeneratedReport",
     "User",
     "UserInterest",
+    "UserProfile",
     "UserSession",
     "UserTopicPreference",
     "create_schema",

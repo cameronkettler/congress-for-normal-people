@@ -26,6 +26,33 @@ class BillLookupRequest(BaseModel):
     bill_id: str = Field(..., examples=["hr-1234-118"])
 
 
+class RepresentativeRecord(BaseModel):
+    name: str
+    chamber: str
+    party: str = "Unknown"
+    state: str
+    district: str | None = None
+    bioguide_id: str | None = None
+    official_url: str | None = None
+
+
+class RepresentativeBillSignal(BaseModel):
+    representative: RepresentativeRecord
+    signal: str
+    detail: str
+
+
+class UserProfileResponse(BaseModel):
+    street_address: str = ""
+    city: str = ""
+    state: str = ""
+    zip_code: str = ""
+    congressional_district: str = ""
+    location_confidence: str = "unknown"
+    representatives: list[RepresentativeRecord] = Field(default_factory=list)
+    warning: str | None = None
+
+
 class StakeholderInsight(BaseModel):
     name: str
     context: str = "Related lobbying disclosure found for this bill title or policy terms."
@@ -49,6 +76,7 @@ class BillLookupResponse(BaseModel):
     stakeholders: dict[str, list[StakeholderInsight]]
     caveats: list[str]
     confidence: str
+    representative_context: list[RepresentativeBillSignal] = Field(default_factory=list)
 
 
 class MonitoringBill(BaseModel):

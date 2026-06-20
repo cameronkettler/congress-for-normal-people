@@ -35,6 +35,23 @@ type LookupResponse = {
   };
   caveats: string[];
   confidence: string;
+  representative_context?: RepresentativeBillSignal[];
+};
+
+type RepresentativeRecord = {
+  name: string;
+  chamber: string;
+  party: string;
+  state: string;
+  district?: string | null;
+  bioguide_id?: string | null;
+  official_url?: string | null;
+};
+
+type RepresentativeBillSignal = {
+  representative: RepresentativeRecord;
+  signal: string;
+  detail: string;
 };
 
 type StakeholderInsight = {
@@ -78,6 +95,17 @@ type AuthResponse = {
   user: AuthUser;
 };
 
+type UserProfile = {
+  street_address: string;
+  city: string;
+  state: string;
+  zip_code: string;
+  congressional_district: string;
+  location_confidence: string;
+  representatives: RepresentativeRecord[];
+  warning?: string | null;
+};
+
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 const tokenStorageKey = "civic-pulse-token";
 
@@ -89,6 +117,7 @@ export default function Home() {
   const [lookup, setLookup] = useState<LookupResponse | null>(null);
   const [recent, setRecent] = useState<MonitoringBill[]>([]);
   const [interests, setInterests] = useState<Interest[]>([]);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(false);
   const [polling, setPolling] = useState(false);
   const [status, setStatus] = useState("Ready");
@@ -119,7 +148,7 @@ export default function Home() {
       const account = (await response.json()) as AuthUser;
       setAuthToken(storedToken);
       setUser(account);
-      await loadInterests(storedToken);
+      await Promise.all([loadInterests(storedToken), loadProfile(storedToken)]);
     } finally {
       setAuthChecked(true);
     }
@@ -158,6 +187,38 @@ export default function Home() {
       return;
     }
     setInterests(await response.json());
+  }
+
+  async function loadProfile(token = authToken) {
+    if (!token) return;
+    const response = await fetch(`${apiBase}/api/profile`, {
+      headers: authHeaders(token)
+    });
+    if (response.ok) {
+      setProfile(await response.json());
+    }
+  }
+
+  async function saveProfileLocation(payload: {
+    street_address: string;
+    city: string;
+    state: string;
+    zip_code: string;
+  }) {
+    if (!authToken) return;
+    setStatus("Resolving your district");
+    const response = await fetch(`${apiBase}/api/profile/location`, {
+      method: "PUT",
+      headers: authHeaders(authToken),
+      body: JSON.stringify(payload)
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      setStatus(body.detail ?? "Could not resolve that address");
+      return;
+    }
+    setProfile(body);
+    setStatus("Profile updated");
   }
 
   async function toggleInterest(interest: Interest) {
@@ -210,6 +271,7 @@ export default function Home() {
     setAuthToken(null);
     setUser(null);
     setInterests([]);
+    setProfile(null);
     setStatus("Signed out");
   }
 
@@ -220,7 +282,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/api/bills/lookup`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authToken ? authHeaders(authToken) : { "Content-Type": "application/json" },
         body: JSON.stringify({ bill_id: billId })
       });
       const payload = await response.json();
@@ -369,6 +431,10 @@ export default function Home() {
                   )}
                 </section>
 
+                {lookup.representative_context && lookup.representative_context.length > 0 ? (
+                  <RepresentativeContext signals={lookup.representative_context} />
+                ) : null}
+
                 <div className="grid gap-3 md:grid-cols-2">
                   <StakeholderList
                     title="Related Lobbying Activity"
@@ -393,6 +459,8 @@ export default function Home() {
         </div>
 
         <aside className="grid gap-5">
+          <ProfileCard profile={profile} onSave={saveProfileLocation} />
+
           <div className="rounded border border-line bg-white">
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
               <div className="flex items-center gap-2">
@@ -581,6 +649,131 @@ function Metric({ label, value, compact = false }: { label: string; value: strin
       <div className="text-xs font-semibold uppercase text-slate-500">{label}</div>
       <div className="mt-1 break-words text-sm font-semibold">{value}</div>
     </div>
+  );
+}
+
+function ProfileCard({
+  profile,
+  onSave
+}: {
+  profile: UserProfile | null;
+  onSave: (payload: {
+    street_address: string;
+    city: string;
+    state: string;
+    zip_code: string;
+  }) => Promise<void>;
+}) {
+  const [streetAddress, setStreetAddress] = useState(profile?.street_address ?? "");
+  const [city, setCity] = useState(profile?.city ?? "");
+  const [state, setState] = useState(profile?.state ?? "");
+  const [zipCode, setZipCode] = useState(profile?.zip_code ?? "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setStreetAddress(profile?.street_address ?? "");
+    setCity(profile?.city ?? "");
+    setState(profile?.state ?? "");
+    setZipCode(profile?.zip_code ?? "");
+  }, [profile]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      await onSave({ street_address: streetAddress, city, state, zip_code: zipCode });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="rounded border border-line bg-white">
+      <div className="flex items-center gap-2 border-b border-line px-4 py-3">
+        <UserRound size={18} aria-hidden="true" />
+        <h2 className="text-base font-semibold">Profile</h2>
+      </div>
+      <form onSubmit={submit} className="grid gap-2 p-4">
+        <input
+          className="focus-ring rounded border border-line px-3 py-2 text-sm"
+          value={streetAddress}
+          onChange={(event) => setStreetAddress(event.target.value)}
+          placeholder="Street address"
+          aria-label="Street address"
+        />
+        <div className="grid grid-cols-[1fr_70px_90px] gap-2">
+          <input
+            className="focus-ring min-w-0 rounded border border-line px-3 py-2 text-sm"
+            value={city}
+            onChange={(event) => setCity(event.target.value)}
+            placeholder="City"
+            aria-label="City"
+          />
+          <input
+            className="focus-ring min-w-0 rounded border border-line px-3 py-2 text-sm uppercase"
+            value={state}
+            onChange={(event) => setState(event.target.value.toUpperCase())}
+            placeholder="State"
+            aria-label="State"
+            maxLength={2}
+          />
+          <input
+            className="focus-ring min-w-0 rounded border border-line px-3 py-2 text-sm"
+            value={zipCode}
+            onChange={(event) => setZipCode(event.target.value)}
+            placeholder="ZIP"
+            aria-label="ZIP code"
+            required
+          />
+        </div>
+        <button
+          className="focus-ring inline-flex items-center justify-center gap-2 rounded border border-line px-3 py-2 text-sm font-medium"
+          disabled={saving}
+        >
+          {saving ? <Loader2 className="animate-spin" size={16} /> : <Radar size={16} />}
+          Save district
+        </button>
+      </form>
+      {profile?.congressional_district ? (
+        <div className="border-t border-line p-4 text-sm">
+          <div className="font-semibold">
+            {profile.state}-{profile.congressional_district}
+          </div>
+          <div className="mt-2 grid gap-2">
+            {profile.representatives.map((representative) => (
+              <div key={`${representative.chamber}-${representative.name}`} className="leading-5">
+                <div className="font-medium">{representative.name}</div>
+                <div className="text-xs text-slate-600">
+                  {representative.chamber} · {representative.party}
+                </div>
+              </div>
+            ))}
+          </div>
+          {profile.warning ? <p className="mt-2 text-xs text-slate-500">{profile.warning}</p> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RepresentativeContext({ signals }: { signals: RepresentativeBillSignal[] }) {
+  return (
+    <section className="rounded border border-line bg-panel p-3">
+      <h4 className="mb-2 text-sm font-semibold uppercase text-slate-500">Your Representative Context</h4>
+      <div className="grid gap-2">
+        {signals.map((signal) => (
+          <article key={`${signal.representative.chamber}-${signal.representative.name}`} className="text-sm leading-6">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold">{signal.representative.name}</span>
+              <span className="rounded bg-white px-2 py-0.5 text-xs font-medium text-slate-600">
+                {signal.signal}
+              </span>
+            </div>
+            <p className="text-xs leading-5 text-slate-600">{signal.detail}</p>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 

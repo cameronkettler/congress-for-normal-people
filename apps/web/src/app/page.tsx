@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   Activity,
   Bell,
@@ -285,6 +286,14 @@ export default function Home() {
             <span>{status}</span>
             <span className="hidden text-slate-400 md:inline">|</span>
             <span className="hidden md:inline">{user.email}</span>
+            <Link
+              href="/profile"
+              className="focus-ring grid h-8 w-8 place-items-center rounded border border-line text-slate-700"
+              aria-label="Profile settings"
+              title="Profile settings"
+            >
+              <UserRound size={15} aria-hidden="true" />
+            </Link>
             <button
               onClick={signOut}
               className="focus-ring inline-flex items-center gap-1 rounded border border-line px-2 py-1 text-xs font-medium"

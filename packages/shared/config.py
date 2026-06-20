@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     lobbying_disclosure_base_url: str = "https://lda.gov/api/v1"
     lobbying_api_live: bool = False
     lobbying_api_timeout_seconds: float = 60.0
+    census_geocoder_base_url: str = "https://geocoding.geo.census.gov/geocoder"
+    census_geocoder_timeout_seconds: float = 30.0
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.4-mini"
     openai_api_live: bool = False

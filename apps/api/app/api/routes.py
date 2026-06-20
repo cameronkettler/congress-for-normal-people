@@ -18,11 +18,19 @@ from packages.agents.bill_lookup import BillLookupWorkflow, ProviderLookupError
 from packages.agents.bill_lookup.input_resolver import BillInputResolutionError
 from packages.agents.bill_monitoring import BillMonitoringWorkflow
 from packages.db import get_session
-from packages.db.models import Bill, BillMonitoring, GeneratedReport, User, UserSession, UserTopicPreference
+from packages.db.models import Bill, BillMonitoring, GeneratedReport, User, UserProfile, UserSession, UserTopicPreference
+from packages.ingestion.census import CensusGeocoderClient
 from packages.ingestion.congress import CongressClient
 from packages.jobs.poll_new_bills import poll_new_bills
 from packages.shared.config import get_settings
-from packages.shared.schemas import BillLookupRequest, BillLookupResponse, MonitoringBill, MonitoringRecentResponse
+from packages.shared.schemas import (
+    BillLookupRequest,
+    BillLookupResponse,
+    MonitoringBill,
+    MonitoringRecentResponse,
+    RepresentativeRecord,
+    UserProfileResponse,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -40,6 +48,14 @@ class AuthResponse(BaseModel):
 
 class InterestUpdate(BaseModel):
     enabled: bool
+
+
+class ProfileLocationRequest(BaseModel):
+    street_address: str = ""
+    address_line_2: str = ""
+    city: str = ""
+    state: str = ""
+    zip_code: str
 
 
 @router.post("/auth/register", response_model=AuthResponse)
@@ -182,6 +198,93 @@ def monitoring_bill_rows(rows: list[Bill]) -> list[MonitoringBill]:
         )
         for row in rows
     ]
+
+
+@router.get("/profile", response_model=UserProfileResponse)
+async def get_profile(user: User = Depends(current_user), db: Session = Depends(get_session)):
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).one_or_none()
+    if profile is None:
+        return UserProfileResponse(warning="Add an address to see your representatives.")
+    return await profile_response(profile)
+
+
+@router.put("/profile/location", response_model=UserProfileResponse)
+async def update_profile_location(
+    payload: ProfileLocationRequest,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    try:
+        resolved = await CensusGeocoderClient().resolve_location(
+            street_address=payload.street_address,
+            address_line_2=payload.address_line_2,
+            city=payload.city,
+            state=payload.state,
+            zip_code=payload.zip_code,
+        )
+    except (httpx.TimeoutException, httpx.HTTPError, ValueError) as exc:
+        logger.warning(
+            "profile location resolution failed",
+            extra={
+                "endpoint": "/api/profile/location",
+                "user_id": user.id,
+                "city": payload.city,
+                "state": payload.state,
+                "zip_code": payload.zip_code,
+                "error_type": exc.__class__.__name__,
+            },
+        )
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Could not resolve that address to a congressional district. "
+                "Try using the USPS street abbreviation, e.g. S Pearl Expy."
+            ),
+        ) from exc
+
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).one_or_none()
+    if profile is None:
+        profile = UserProfile(user_id=user.id)
+        db.add(profile)
+
+    profile.street_address = payload.street_address.strip()
+    profile.address_line_2 = payload.address_line_2.strip()
+    profile.city = payload.city.strip()
+    profile.state = resolved.state
+    profile.zip_code = payload.zip_code.strip()
+    profile.congressional_district = resolved.congressional_district
+    profile.location_confidence = resolved.confidence
+    db.commit()
+    db.refresh(profile)
+    return await profile_response(profile)
+
+
+async def profile_response(profile: UserProfile) -> UserProfileResponse:
+    representatives, warning = await representatives_for_profile(profile)
+    return UserProfileResponse(
+        street_address=profile.street_address,
+        address_line_2=profile.address_line_2,
+        city=profile.city,
+        state=profile.state,
+        zip_code=profile.zip_code,
+        congressional_district=profile.congressional_district,
+        location_confidence=profile.location_confidence,
+        representatives=representatives,
+        warning=warning,
+    )
+
+
+async def representatives_for_profile(profile: UserProfile) -> tuple[list[RepresentativeRecord], str | None]:
+    congress = CongressClient()
+    representatives: list[RepresentativeRecord] = []
+    try:
+        house = await congress.get_current_house_member(profile.state, profile.congressional_district)
+        if house:
+            representatives.append(house)
+        representatives.extend(await congress.list_current_senators(profile.state))
+    except (httpx.TimeoutException, httpx.HTTPError, Exception):
+        return representatives, "Representative lookup is temporarily unavailable."
+    return representatives, None
 
 
 @router.post("/monitoring/poll")

@@ -28,6 +28,7 @@ from packages.shared.schemas import (
     BillLookupResponse,
     MonitoringBill,
     MonitoringRecentResponse,
+    RepresentativeBillSignal,
     RepresentativeRecord,
     UserProfileResponse,
 )
@@ -107,7 +108,11 @@ def logout(
 
 
 @router.post("/bills/lookup", response_model=BillLookupResponse)
-async def lookup_bill(payload: BillLookupRequest, db: Session = Depends(get_session)):
+async def lookup_bill(
+    payload: BillLookupRequest,
+    db: Session = Depends(get_session),
+    authorization: str | None = Header(default=None),
+):
     try:
         response = await BillLookupWorkflow().run(payload.bill_id)
     except BillInputResolutionError as exc:
@@ -146,6 +151,8 @@ async def lookup_bill(payload: BillLookupRequest, db: Session = Depends(get_sess
         db.rollback()
         log_lookup_failure(payload.bill_id, "Application", exc)
         return lookup_error_response("Application")
+    if user := optional_user_from_authorization(db, authorization):
+        response.representative_context = await representative_context_for_bill(db, user, response)
     return response
 
 
@@ -184,6 +191,47 @@ async def recent_bills(db: Session = Depends(get_session)):
         items=[],
         warning=warning,
     )
+
+
+async def representative_context_for_bill(
+    db: Session,
+    user: User,
+    response: BillLookupResponse,
+) -> list[RepresentativeBillSignal]:
+    profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).one_or_none()
+    if profile is None:
+        return []
+
+    representatives, _ = await representatives_for_profile(profile)
+    cosponsors = await safe_bill_cosponsors(response.bill.congress_bill_id)
+    cosponsor_ids = {
+        item.get("bioguideId")
+        for item in cosponsors
+        if isinstance(item, dict) and item.get("bioguideId")
+    }
+    sponsor_name = response.bill.sponsor.casefold()
+
+    signals: list[RepresentativeBillSignal] = []
+    for representative in representatives:
+        rep_name = representative.name.casefold()
+        if rep_name and (rep_name in sponsor_name or sponsor_name in rep_name):
+            signal = "Sponsor"
+            detail = "Your representative is listed as the bill sponsor, which is a formal support signal."
+        elif representative.bioguide_id and representative.bioguide_id in cosponsor_ids:
+            signal = "Cosponsor"
+            detail = "Your representative is listed as a cosponsor, which is a formal support signal."
+        else:
+            signal = "No direct signal found"
+            detail = "No sponsor or cosponsor relationship was found in the available Congress.gov data."
+        signals.append(RepresentativeBillSignal(representative=representative, signal=signal, detail=detail))
+    return signals
+
+
+async def safe_bill_cosponsors(bill_id: str) -> list[dict[str, object]]:
+    try:
+        return await CongressClient().list_bill_cosponsors(bill_id)
+    except (httpx.TimeoutException, httpx.HTTPError, Exception):
+        return []
 
 
 def monitoring_bill_rows(rows: list[Bill]) -> list[MonitoringBill]:
@@ -347,6 +395,14 @@ def update_interest(
 
 def auth_response(user: User, token: str) -> AuthResponse:
     return AuthResponse(token=token, user={"id": user.id, "email": user.email})
+
+
+def optional_user_from_authorization(db: Session, authorization: str | None) -> User | None:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.removeprefix("Bearer ").strip()
+    session = db.query(UserSession).filter(UserSession.token == token).one_or_none()
+    return session.user if session else None
 
 
 def enabled_topics_for_user(db: Session, user: User) -> set[str]:

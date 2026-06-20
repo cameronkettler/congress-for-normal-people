@@ -18,6 +18,10 @@ class CensusGeocoderClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
+    async def resolve_address(self, address: str) -> ResolvedDistrict:
+        attempts = self._oneline_attempts(address)
+        return await self._resolve_attempts(attempts)
+
     async def resolve_location(
         self,
         *,
@@ -28,6 +32,9 @@ class CensusGeocoderClient:
         zip_code: str = "",
     ) -> ResolvedDistrict:
         attempts = self._address_attempts(street_address, address_line_2, city, state, zip_code)
+        return await self._resolve_attempts(attempts)
+
+    async def _resolve_attempts(self, attempts: list[dict[str, Any]]) -> ResolvedDistrict:
         async with httpx.AsyncClient(timeout=self.settings.census_geocoder_timeout_seconds) as client:
             for attempt in attempts:
                 response = await client.get(attempt["url"], params=attempt["params"])
@@ -44,19 +51,14 @@ class CensusGeocoderClient:
         state: str,
         zip_code: str,
     ) -> list[dict[str, Any]]:
-        base_params = {
-            "benchmark": "Public_AR_Current",
-            "vintage": "Current_Current",
-            "layers": "all",
-            "format": "json",
-        }
+        base_params = self._base_params()
         street_variants = self._street_variants(street_address)
         line_2 = " ".join(address_line_2.split())
         street_attempts = street_variants[:]
         if line_2:
             street_attempts.extend(f"{street} {line_2}" for street in street_variants)
-        attempts: list[dict[str, Any]] = []
 
+        attempts: list[dict[str, Any]] = []
         for street in street_attempts:
             if street and (city or state or zip_code):
                 attempts.append(
@@ -76,14 +78,28 @@ class CensusGeocoderClient:
         for street in street_attempts or [""]:
             oneline = " ".join(part for part in [street, city, state, zip_code] if part).strip()
             if oneline:
-                attempts.append(
-                    {
-                        "label": "address_match",
-                        "url": f"{self.settings.census_geocoder_base_url}/geographies/onelineaddress",
-                        "params": {**base_params, "address": oneline},
-                    }
-                )
+                attempts.extend(self._oneline_attempts(oneline))
         return attempts
+
+    def _oneline_attempts(self, address: str) -> list[dict[str, Any]]:
+        normalized = " ".join(address.split())
+        if not normalized:
+            return []
+        return [
+            {
+                "label": "address_match",
+                "url": f"{self.settings.census_geocoder_base_url}/geographies/onelineaddress",
+                "params": {**self._base_params(), "address": normalized},
+            }
+        ]
+
+    def _base_params(self) -> dict[str, str]:
+        return {
+            "benchmark": "Public_AR_Current",
+            "vintage": "Current_Current",
+            "layers": "all",
+            "format": "json",
+        }
 
     def _street_variants(self, street_address: str) -> list[str]:
         street = " ".join(street_address.split())

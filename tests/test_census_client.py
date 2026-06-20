@@ -54,4 +54,17 @@ def test_census_geocoder_parses_current_congressional_district_key(monkeypatch):
 
     assert resolved.state == "TX"
     assert resolved.congressional_district == "30"
+    assert resolved.confidence == "address_match"
     assert _FakeCensusAsyncClient.requests[0]["url"].endswith("/geographies/address")
+
+
+def test_census_geocoder_supports_oneline_address(monkeypatch):
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeCensusAsyncClient)
+
+    resolved = asyncio.run(
+        CensusGeocoderClient(Settings()).resolve_address("1011 S Pearl Expy Dallas TX 75201")
+    )
+
+    assert resolved.state == "TX"
+    assert resolved.congressional_district == "30"
+    assert _FakeCensusAsyncClient.requests[0]["url"].endswith("/geographies/onelineaddress")

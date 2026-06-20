@@ -96,7 +96,9 @@ class CongressClient:
             response = await client.get(url, params={**self._request_params(), "currentMember": "true"})
             response.raise_for_status()
             members = response.json().get("members", [])
-        return self._representative_from_member(members[0], "House") if members else None
+        if not members:
+            return None
+        return self._representative_from_member(members[0], "House")
 
     async def list_current_senators(self, state: str) -> list[RepresentativeRecord]:
         if not self.settings.congress_api_key:
@@ -110,13 +112,22 @@ class CongressClient:
             response = await client.get(url, params={**self._request_params(), "currentMember": "true"})
             response.raise_for_status()
             members = response.json().get("members", [])
+        return [
+            representative
+            for member in members
+            if (representative := self._representative_from_member(member, self._member_chamber(member))).chamber == "Senate"
+        ][:2]
 
-        senators: list[RepresentativeRecord] = []
-        for member in members:
-            representative = self._representative_from_member(member, self._member_chamber(member))
-            if representative.chamber == "Senate":
-                senators.append(representative)
-        return senators[:2]
+    async def list_bill_cosponsors(self, bill_id: str) -> list[dict[str, Any]]:
+        if not self.settings.congress_api_key:
+            return []
+
+        congress, bill_type, number = self._parse_bill_id(bill_id)
+        url = f"{self.base_url}/bill/{congress}/{bill_type}/{number}/cosponsors"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(self.settings.congress_api_timeout_seconds)) as client:
+            response = await client.get(url, params=self._request_params())
+            response.raise_for_status()
+            return response.json().get("cosponsors", [])
 
     async def list_recent_bills(self, limit: int = 10) -> list[BillRecord]:
         if not self.settings.congress_api_key:
@@ -216,6 +227,25 @@ class CongressClient:
         if isinstance(policy_area, dict) and policy_area.get("name"):
             return policy_area["name"]
         return self.classify_topic(fallback_text)
+
+    def _representative_from_member(self, member: dict[str, Any], chamber: str) -> RepresentativeRecord:
+        terms = member.get("terms", {}).get("item", []) if isinstance(member.get("terms"), dict) else []
+        latest_term = terms[-1] if terms else {}
+        return RepresentativeRecord(
+            name=member.get("directOrderName") or member.get("name") or member.get("invertedOrderName") or "Unknown member",
+            chamber=chamber,
+            party=member.get("partyName") or latest_term.get("partyName") or "Unknown",
+            state=member.get("state") or latest_term.get("stateCode") or "",
+            district=str(member.get("district") or latest_term.get("district") or "") or None,
+            bioguide_id=member.get("bioguideId"),
+            official_url=member.get("officialUrl"),
+        )
+
+    def _member_chamber(self, member: dict[str, Any]) -> str:
+        terms = member.get("terms", {}).get("item", []) if isinstance(member.get("terms"), dict) else []
+        latest = terms[-1] if terms else {}
+        chamber = latest.get("chamber", "")
+        return "Senate" if "Senate" in chamber else "House"
 
     def _parse_bill_id(self, bill_id: str) -> tuple[str, str, str]:
         normalized = bill_id.lower().replace(".", "").replace(" ", "-")

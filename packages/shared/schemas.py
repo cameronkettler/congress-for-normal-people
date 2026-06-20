@@ -41,6 +41,8 @@ class RepresentativeBillSignal(BaseModel):
     representative: RepresentativeRecord
     signal: str
     detail: str
+    ai_context: str | None = None
+    ai_context_label: str = "AI-assisted context"
     sources: list[SourceReference] = Field(default_factory=list)
 
 

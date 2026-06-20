@@ -1,1 +1,1 @@
-"""Civic Pulse API."""
+"""Congress For Normal People API."""

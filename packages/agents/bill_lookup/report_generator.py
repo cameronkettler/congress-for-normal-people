@@ -60,7 +60,7 @@ class OpenAIReportGenerator:
         signal: str,
         search_results: list[dict[str, str]],
     ) -> dict[str, Any] | None:
-        if not self.enabled or not search_results:
+        if not self.enabled:
             return None
 
         payload = self._build_representative_position_payload(
@@ -96,7 +96,7 @@ class OpenAIReportGenerator:
                 {
                     "role": "system",
                     "content": (
-                        "You are Civic Pulse's political commentary analyst. Explain what a federal "
+                        "You are Congress For Normal People's political commentary analyst. Explain what a federal "
                         "bill would do and why people may support or criticize it. Synthesize only "
                         "the provided structured source data. Do not invent facts, dates, sponsors, "
                         "positions, vote counts, or stakeholder intent. Use cautious language for "
@@ -202,31 +202,37 @@ class OpenAIReportGenerator:
                 {
                     "role": "system",
                     "content": (
-                        "You identify whether public search-result snippets explain why a member of "
-                        "Congress supports or criticizes a bill. Use only the provided snippets and "
-                        "links. Do not use outside knowledge. If the snippets do not explain a reason, "
-                        "return position='unclear' and an empty reason. If the known signal is a recorded "
-                        "vote, treat that vote as the position and use search snippets only to explain the "
-                        "member's likely stated or reported rationale."
+                        "You are Congress For Normal People's representative-context analyst. Explain, objectively and "
+                        "carefully, why a member of Congress may support or criticize a bill. Use the "
+                        "provided official signal, bill details, representative metadata, and public search "
+                        "snippets. Do not invent voting records, presidential positions, party pressure, "
+                        "or ideological motives. If search snippets or the official signal provide relevant "
+                        "context about party alignment, leadership pressure, presidential priorities, prior "
+                        "votes, district interests, or stated policy concerns, synthesize that context with "
+                        "clear attribution. If no rationale can be supported, return position='unclear' and "
+                        "an empty reason."
                     ),
                 },
                 {
                     "role": "user",
                     "content": json.dumps(
                         {
-                            "task": "Summarize the representative's public reason for their position in 1-2 sentences.",
+                            "task": "Generate an objective representative-context note in 2-3 sentences.",
                             "bill": bill,
                             "representative": representative,
                             "known_signal": signal,
                             "search_results": search_results,
                             "requirements": [
-                                "Use cautious attribution such as 'public reporting suggests' unless the source is the representative's own site.",
+                                "Start from the known official signal when it is a vote, sponsor, or cosponsor relationship.",
+                                "Use cautious attribution such as 'public reporting suggests' unless the source is the representative's own site or a recorded vote.",
                                 "Treat cosponsor/cosponsored language as a support signal if the snippet clearly connects it to the representative.",
-                                "Prefer snippets that explain rationale, such as voter suppression, disenfranchisement, documentation burden, election integrity, or voting access.",
+                                "Mention party, presidential, leadership, district, or voting-pattern context only when it is present in the provided data.",
+                                "Prefer snippets that explain rationale, policy concerns, strategic pressure, constituent impact, or party debate.",
                                 "Use sources that mention the representative by name or clearly come from the representative's official account.",
                                 "Do not cite unrelated posts from other representatives or generic bill trackers as evidence of this representative's rationale.",
                                 "Do not use generic bill-summary snippets as the reason unless no better source exists.",
                                 "Do not claim support or criticism unless the snippets clearly support it.",
+                                "Keep the note useful to a constituent, not a campaign argument.",
                                 "Return at most three source links used.",
                             ],
                         },
@@ -250,7 +256,7 @@ class OpenAIReportGenerator:
                             },
                             "reason": {
                                 "type": "string",
-                                "description": "One or two sentences grounded only in the provided search snippets.",
+                                "description": "Two or three objective sentences grounded only in the provided signal and search snippets.",
                             },
                             "sources": {
                                 "type": "array",

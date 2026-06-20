@@ -131,7 +131,7 @@ def test_representative_position_detail_appends_grounded_public_reason(monkeypat
         bioguide_id="C001130",
     )
 
-    signal, detail, sources = asyncio.run(
+    signal, detail, sources, ai_context = asyncio.run(
         routes.enrich_representative_position_signal(
             bill={"congress_bill_id": "hr-22-119", "title": "SAVE Act"},
             representative=representative,
@@ -141,8 +141,9 @@ def test_representative_position_detail_appends_grounded_public_reason(monkeypat
     )
 
     assert signal == "Voted against"
-    assert "Public-position context" in detail
-    assert "voting barriers" in detail
+    assert detail == "Your representative voted Nay on On Passage."
+    assert ai_context is not None
+    assert "voting barriers" in ai_context
     assert sources[0].url == "https://example.com/statement"
 
 
@@ -177,7 +178,7 @@ def test_representative_position_signal_upgrades_no_direct_signal_from_public_ev
         bioguide_id="C001130",
     )
 
-    signal, detail, sources = asyncio.run(
+    signal, detail, sources, ai_context = asyncio.run(
         routes.enrich_representative_position_signal(
             bill={"congress_bill_id": "hr-22-119", "title": "SAVE Act"},
             representative=representative,
@@ -187,8 +188,9 @@ def test_representative_position_signal_upgrades_no_direct_signal_from_public_ev
     )
 
     assert signal == "Publicly criticized"
-    assert "voter suppression" in detail
-    assert not detail.startswith("No sponsor or cosponsor")
+    assert "formal sponsor, cosponsor, or recorded-vote signal" in detail
+    assert ai_context is not None
+    assert "voter suppression" in ai_context
     assert sources[0].url == "https://example.com/news"
 
 
@@ -218,7 +220,7 @@ def test_public_search_can_report_cosponsor_relationship_without_llm(monkeypatch
         bioguide_id="C001130",
     )
 
-    signal, detail, sources = asyncio.run(
+    signal, detail, sources, ai_context = asyncio.run(
         routes.enrich_representative_position_signal(
             bill={"congress_bill_id": "hr-8800-119", "title": "National Defense Authorization Act for Fiscal Year 2027"},
             representative=representative,
@@ -229,6 +231,7 @@ def test_public_search_can_report_cosponsor_relationship_without_llm(monkeypatch
 
     assert signal == "Reported cosponsor"
     assert "support signal" in detail
+    assert ai_context is None
     assert sources[0].url == "https://example.com/hr-8800"
 
 
@@ -258,7 +261,7 @@ def test_representative_position_signal_reports_public_search_when_reason_unclea
         bioguide_id="C001130",
     )
 
-    signal, detail, sources = asyncio.run(
+    signal, detail, sources, ai_context = asyncio.run(
         routes.enrich_representative_position_signal(
             bill={"congress_bill_id": "hr-22-119", "title": "SAVE Act"},
             representative=representative,
@@ -269,7 +272,48 @@ def test_representative_position_signal_reports_public_search_when_reason_unclea
 
     assert signal == "Public search reviewed"
     assert "review the source links below" in detail
+    assert ai_context is None
     assert sources[0].url == "https://example.com/coverage"
+
+
+def test_representative_position_agent_can_use_formal_signal_without_search(monkeypatch):
+    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
+        return []
+
+    class FakeReportGenerator:
+        async def generate_representative_position_reason(self, **_: object):
+            return {
+                "position": "supports",
+                "reason": "The recorded vote is a formal support signal, while the bill topic suggests a defense-policy rationale.",
+                "sources": [],
+                "confidence": "low",
+            }
+
+    monkeypatch.setattr(routes, "search_representative_position", fake_search)
+    monkeypatch.setattr(routes, "OpenAIReportGenerator", FakeReportGenerator)
+    representative = RepresentativeRecord(
+        name="Weber, Randy K. Sr.",
+        chamber="House",
+        party="Republican",
+        state="TX",
+        district="14",
+        bioguide_id="W000814",
+    )
+
+    signal, detail, sources, ai_context = asyncio.run(
+        routes.enrich_representative_position_signal(
+            bill={"congress_bill_id": "hr-8800-119", "title": "National Defense Authorization Act for Fiscal Year 2027"},
+            representative=representative,
+            signal="Voted for",
+            detail="Your representative voted Aye on On Passage.",
+        )
+    )
+
+    assert signal == "Voted for"
+    assert detail == "Your representative voted Aye on On Passage."
+    assert sources == []
+    assert ai_context is not None
+    assert "formal support signal" in ai_context
 
 
 def test_formatted_position_sources_filters_unrelated_sources():

@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     email_from: str = "alerts@civic-pulse.local"
     email_to: str = "demo@example.com"
-    app_name: str = "Civic Pulse"
+    app_name: str = "Congress For Normal People"
     environment: str = Field(default="development")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")

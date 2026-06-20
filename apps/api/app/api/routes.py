@@ -226,7 +226,7 @@ async def representative_context_for_bill(
         else:
             signal = "No direct signal found"
             detail = "No sponsor or cosponsor relationship was found in the available Congress.gov data."
-        signal, detail, sources = await enrich_representative_position_signal(
+        signal, detail, sources, ai_context = await enrich_representative_position_signal(
             bill=response.bill.model_dump(mode="json"),
             representative=representative,
             signal=signal,
@@ -237,6 +237,7 @@ async def representative_context_for_bill(
                 representative=representative,
                 signal=signal,
                 detail=detail,
+                ai_context=ai_context,
                 sources=sources,
             )
         )
@@ -327,13 +328,11 @@ async def enrich_representative_position_signal(
     representative: RepresentativeRecord,
     signal: str,
     detail: str,
-) -> tuple[str, str, list[SourceReference]]:
+) -> tuple[str, str, list[SourceReference], str | None]:
     search_results = await search_representative_position(bill, representative)
-    if not search_results:
-        return signal, detail, []
-
     if reported_cosponsor := public_reported_cosponsor_signal(signal, search_results, representative):
-        return reported_cosponsor
+        reported_signal, reported_detail, reported_sources = reported_cosponsor
+        return reported_signal, reported_detail, reported_sources, None
 
     reason = await OpenAIReportGenerator().generate_representative_position_reason(
         bill=bill,
@@ -342,24 +341,27 @@ async def enrich_representative_position_signal(
         search_results=[search_result_payload(item) for item in search_results],
     )
     if not reason or not reason.get("reason"):
+        if not search_results:
+            return signal, detail, [], None
         if signal != "No direct signal found":
-            return signal, detail, fallback_position_sources(search_results, representative)
+            return signal, detail, fallback_position_sources(search_results, representative), None
         return (
             public_search_reviewed_signal(signal),
             public_search_reviewed_detail(detail),
             fallback_position_sources(search_results, representative),
+            None,
         )
 
     enriched_signal = public_position_signal(signal, str(reason.get("position", "")))
 
     sources = formatted_position_sources(reason, search_results, representative)
-    return enriched_signal, representative_context_detail(detail, str(reason["reason"])), sources
+    return enriched_signal, representative_context_detail(detail), sources, str(reason["reason"])
 
 
-def representative_context_detail(base_detail: str, reason: str) -> str:
+def representative_context_detail(base_detail: str) -> str:
     if base_detail.startswith("No sponsor or cosponsor relationship"):
-        return f"Public-position context: {reason}"
-    return f"{base_detail} Public-position context: {reason}"
+        return "No formal sponsor, cosponsor, or recorded-vote signal was found in the available Congress.gov data."
+    return base_detail
 
 
 def formatted_position_sources(

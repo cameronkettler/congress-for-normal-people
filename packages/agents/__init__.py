@@ -1,1 +1,1 @@
-"""Agentic workflows for Civic Pulse."""
+"""Agentic workflows for Congress For Normal People."""

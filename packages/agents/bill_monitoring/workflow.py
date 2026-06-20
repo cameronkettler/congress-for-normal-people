@@ -94,7 +94,7 @@ class BillMonitoringWorkflow:
 
     async def generate_email_content(self, state: BillMonitoringState) -> BillMonitoringState:
         bill = state["bill"]
-        subject = f"Civic Pulse alert: {state['topic']} bill {bill.congress_bill_id}"
+        subject = f"{self.settings.app_name} alert: {state['topic']} bill {bill.congress_bill_id}"
         text = f"{state['summary']}\n\nMonitor status: {'relevant' if state['relevant'] else 'FYI'}"
         html = f"<h1>{bill.title}</h1><p>{state['summary']}</p>"
         return {

@@ -4,11 +4,13 @@ import Link from "next/link";
 import {
   Activity,
   Bell,
+  BrainCircuit,
   CheckCircle2,
   CircleDollarSign,
   FileSearch,
   LogOut,
   Loader2,
+  Plus,
   Radar,
   Search,
   ShieldCheck,
@@ -53,6 +55,8 @@ type RepresentativeBillSignal = {
   representative: RepresentativeRecord;
   signal: string;
   detail: string;
+  ai_context?: string | null;
+  ai_context_label?: string;
   sources?: SourceReference[];
 };
 
@@ -106,6 +110,7 @@ type AuthResponse = {
 
 type UserProfile = {
   street_address: string;
+  address_line_2?: string;
   city: string;
   state: string;
   zip_code: string;
@@ -117,9 +122,10 @@ type UserProfile = {
 
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 const tokenStorageKey = "civic-pulse-token";
+const lastLookupStorageKey = "civic-pulse-last-lookup";
 
 export default function Home() {
-  const [billId, setBillId] = useState("hr-1234-119");
+  const [billId, setBillId] = useState("");
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -129,6 +135,7 @@ export default function Home() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(false);
   const [polling, setPolling] = useState(false);
+  const [newTopic, setNewTopic] = useState("");
   const [status, setStatus] = useState("Ready");
 
   useEffect(() => {
@@ -139,6 +146,7 @@ export default function Home() {
 
   async function bootstrap() {
     await loadRecent();
+    restoreCachedLookup();
     const storedToken = window.localStorage.getItem(tokenStorageKey);
     if (!storedToken) {
       setAuthChecked(true);
@@ -210,6 +218,7 @@ export default function Home() {
 
   async function saveProfileLocation(payload: {
     street_address: string;
+    address_line_2: string;
     city: string;
     state: string;
     zip_code: string;
@@ -254,6 +263,31 @@ export default function Home() {
     }
   }
 
+  async function addInterest(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!authToken) return;
+    const topic = newTopic.trim();
+    if (!topic) return;
+
+    setStatus(`Adding ${topic} to monitoring`);
+    try {
+      const response = await fetch(`${apiBase}/api/interests/${encodeURIComponent(topic)}`, {
+        method: "PATCH",
+        headers: authHeaders(authToken),
+        body: JSON.stringify({ enabled: true })
+      });
+      if (!response.ok) {
+        setStatus("Could not add alert topic");
+        return;
+      }
+      setNewTopic("");
+      await loadInterests();
+      setStatus(`${topic} enabled for monitoring`);
+    } catch {
+      setStatus("Could not reach the API");
+    }
+  }
+
   async function submitAuth(email: string, password: string, mode: "login" | "register") {
     setStatus(mode === "login" ? "Signing in" : "Creating account");
     const response = await fetch(`${apiBase}/api/auth/${mode}`, {
@@ -277,6 +311,7 @@ export default function Home() {
 
   function signOut() {
     window.localStorage.removeItem(tokenStorageKey);
+    window.localStorage.removeItem(lastLookupStorageKey);
     setAuthToken(null);
     setUser(null);
     setInterests([]);
@@ -286,13 +321,20 @@ export default function Home() {
 
   async function submitLookup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    await runLookup(billId);
+  }
+
+  async function runLookup(query: string) {
+    const nextBillId = query.trim();
+    if (!nextBillId) return;
+    setBillId(nextBillId);
     setLoading(true);
     setStatus("Running bill lookup workflow");
     try {
       const response = await fetch(`${apiBase}/api/bills/lookup`, {
         method: "POST",
         headers: authToken ? authHeaders(authToken) : { "Content-Type": "application/json" },
-        body: JSON.stringify({ bill_id: billId })
+        body: JSON.stringify({ bill_id: nextBillId })
       });
       const payload = await response.json();
       if (!response.ok) {
@@ -301,6 +343,7 @@ export default function Home() {
         return;
       }
       setLookup(payload);
+      cacheLookup(nextBillId, payload);
       setStatus("Report generated");
       await loadRecent();
     } catch {
@@ -309,6 +352,29 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function restoreCachedLookup() {
+    const cached = window.localStorage.getItem(lastLookupStorageKey);
+    if (!cached) return;
+    try {
+      const payload = JSON.parse(cached) as { billId?: string; lookup?: LookupResponse };
+      if (payload.lookup) {
+        setLookup(payload.lookup);
+        if (payload.billId) {
+          setBillId(payload.billId);
+        }
+      }
+    } catch {
+      window.localStorage.removeItem(lastLookupStorageKey);
+    }
+  }
+
+  function cacheLookup(nextBillId: string, payload: LookupResponse) {
+    window.localStorage.setItem(
+      lastLookupStorageKey,
+      JSON.stringify({ billId: nextBillId, lookup: payload, cachedAt: Date.now() })
+    );
   }
 
   async function pollBills() {
@@ -347,7 +413,7 @@ export default function Home() {
               <Radar size={21} aria-hidden="true" />
             </div>
             <div>
-              <h1 className="text-xl font-semibold tracking-normal">Civic Pulse</h1>
+              <h1 className="text-xl font-semibold tracking-normal">Congress For Normal People</h1>
               <p className="text-sm text-slate-600">Agentic federal legislation intelligence</p>
             </div>
           </div>
@@ -390,6 +456,7 @@ export default function Home() {
               className="focus-ring min-w-0 flex-1 rounded border border-line px-3 py-2"
               value={billId}
               onChange={(event) => setBillId(event.target.value)}
+              placeholder="Enter a House bill number like HR-22"
               aria-label="Bill number"
             />
             <button
@@ -464,11 +531,16 @@ export default function Home() {
                 </div>
               </>
             ) : (
-              <div className="grid min-h-80 place-items-center rounded border border-dashed border-line bg-panel text-center">
-                <div>
+              <div className="grid min-h-80 place-items-center rounded border border-dashed border-line bg-panel p-6 text-center">
+                <div className="max-w-lg">
                   <FileSearch className="mx-auto mb-3 text-civic" size={34} />
-                  <p className="font-medium">Search a bill to generate a source-grounded report.</p>
-                  <p className="mt-1 text-sm text-slate-600">Demo data is available without API keys.</p>
+                  <p className="text-lg font-semibold">Welcome to Congress For Normal People</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    Search a federal bill to generate a plain-language political read, source context,
+                    and related influence signals. Add your address in the profile panel to see how your
+                    own representative connects to the bill through votes, sponsorship, public reporting,
+                    and AI-assisted context.
+                  </p>
                 </div>
               </div>
             )}
@@ -503,6 +575,21 @@ export default function Home() {
                 <h3 className="text-sm font-semibold uppercase text-slate-500">Alert Topics</h3>
                 <span className="text-xs text-slate-500">Used by Poll</span>
               </div>
+              <form onSubmit={addInterest} className="mb-3 flex gap-2">
+                <input
+                  className="focus-ring min-w-0 flex-1 rounded border border-line px-3 py-2 text-sm"
+                  value={newTopic}
+                  onChange={(event) => setNewTopic(event.target.value)}
+                  placeholder="Add topic"
+                  aria-label="Add alert topic"
+                />
+                <button
+                  className="focus-ring inline-flex items-center justify-center rounded border border-line px-3 text-sm font-medium"
+                  aria-label="Add topic"
+                >
+                  <Plus size={16} aria-hidden="true" />
+                </button>
+              </form>
               <div className="flex flex-wrap gap-2">
                 {interests.map((interest) => (
                   <button
@@ -528,7 +615,12 @@ export default function Home() {
             </div>
             <div className="divide-y divide-line">
               {recent.slice(0, 7).map((bill) => (
-                <article key={bill.congress_bill_id} className="p-4">
+                <button
+                  key={bill.congress_bill_id}
+                  type="button"
+                  onClick={() => void runLookup(bill.congress_bill_id)}
+                  className="focus-ring block w-full p-4 text-left transition hover:bg-panel"
+                >
                   <div className="mb-1 flex items-center justify-between gap-3">
                     <span className="text-xs font-semibold uppercase text-civic">
                       {bill.congress_bill_id}
@@ -537,7 +629,7 @@ export default function Home() {
                   </div>
                   <h3 className="text-sm font-semibold leading-5">{bill.title}</h3>
                   <p className="mt-1 line-clamp-2 text-sm text-slate-600">{bill.summary}</p>
-                </article>
+                </button>
               ))}
             </div>
           </div>
@@ -559,7 +651,7 @@ function LoadingScreen() {
     <main className="grid min-h-screen place-items-center bg-[#eef1f4] text-ink">
       <div className="flex items-center gap-2 text-sm text-slate-700">
         <Loader2 className="animate-spin" size={17} aria-hidden="true" />
-        Loading Civic Pulse
+        Loading Congress For Normal People
       </div>
     </main>
   );
@@ -594,7 +686,7 @@ function LoginPage({
           <div className="mb-4 grid h-11 w-11 place-items-center rounded bg-civic text-white">
             <Radar size={22} aria-hidden="true" />
           </div>
-          <h1 className="text-3xl font-semibold tracking-normal">Civic Pulse</h1>
+          <h1 className="text-3xl font-semibold tracking-normal">Congress For Normal People</h1>
           <p className="mt-3 max-w-xl text-sm leading-6 text-slate-700">
             Sign in to keep monitoring topics tied to your account. Your bill lookups stay source-grounded,
             while alert topics become configurable per user instead of global for everyone.
@@ -676,12 +768,14 @@ function ProfileCard({
   profile: UserProfile | null;
   onSave: (payload: {
     street_address: string;
+    address_line_2: string;
     city: string;
     state: string;
     zip_code: string;
   }) => Promise<void>;
 }) {
   const [streetAddress, setStreetAddress] = useState(profile?.street_address ?? "");
+  const [addressLine2, setAddressLine2] = useState(profile?.address_line_2 ?? "");
   const [city, setCity] = useState(profile?.city ?? "");
   const [state, setState] = useState(profile?.state ?? "");
   const [zipCode, setZipCode] = useState(profile?.zip_code ?? "");
@@ -689,6 +783,7 @@ function ProfileCard({
 
   useEffect(() => {
     setStreetAddress(profile?.street_address ?? "");
+    setAddressLine2(profile?.address_line_2 ?? "");
     setCity(profile?.city ?? "");
     setState(profile?.state ?? "");
     setZipCode(profile?.zip_code ?? "");
@@ -698,7 +793,7 @@ function ProfileCard({
     event.preventDefault();
     setSaving(true);
     try {
-      await onSave({ street_address: streetAddress, city, state, zip_code: zipCode });
+      await onSave({ street_address: streetAddress, address_line_2: addressLine2, city, state, zip_code: zipCode });
     } finally {
       setSaving(false);
     }
@@ -717,6 +812,13 @@ function ProfileCard({
           onChange={(event) => setStreetAddress(event.target.value)}
           placeholder="Street address"
           aria-label="Street address"
+        />
+        <input
+          className="focus-ring rounded border border-line px-3 py-2 text-sm"
+          value={addressLine2}
+          onChange={(event) => setAddressLine2(event.target.value)}
+          placeholder="Address line 2"
+          aria-label="Address line 2"
         />
         <div className="grid grid-cols-[1fr_70px_90px] gap-2">
           <input
@@ -787,6 +889,15 @@ function RepresentativeContext({ signals }: { signals: RepresentativeBillSignal[
               </span>
             </div>
             <p className="text-xs leading-5 text-slate-600">{signal.detail}</p>
+            {signal.ai_context ? (
+              <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2">
+                <div className="mb-1 inline-flex items-center gap-1 text-xs font-semibold uppercase text-amber-800">
+                  <BrainCircuit size={14} aria-hidden="true" />
+                  {signal.ai_context_label ?? "AI-assisted context"}
+                </div>
+                <p className="text-xs leading-5 text-amber-950">{signal.ai_context}</p>
+              </div>
+            ) : null}
             {signal.sources && signal.sources.length > 0 ? (
               <div className="mt-2">
                 <h5 className="text-xs font-semibold uppercase text-slate-500">Sources</h5>

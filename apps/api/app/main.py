@@ -43,8 +43,8 @@ def cors_options() -> dict[str, object]:
 
 
 app = FastAPI(
-    title="Civic Pulse API",
-    description="Agentic civic intelligence for federal legislation.",
+    title="Congress For Normal People API",
+    description="Plain-English federal legislation intelligence.",
     version="0.1.0",
     lifespan=lifespan,
 )

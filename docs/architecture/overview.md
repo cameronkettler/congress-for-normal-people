@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Civic Pulse is split into four layers:
+Congress For Normal People is split into four layers:
 
 1. **Interface layer**: Next.js renders the bill lookup and monitoring dashboard.
 2. **Application layer**: FastAPI exposes workflow endpoints and persistence-backed monitoring views.

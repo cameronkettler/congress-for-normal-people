@@ -1,1 +1,1 @@
-"""Shared Civic Pulse packages."""
+"""Shared Congress For Normal People packages."""

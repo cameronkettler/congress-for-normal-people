@@ -42,6 +42,31 @@ OPENAI_API_LIVE=true
 JOB_TOKEN=<long random token>
 ```
 
+### Render Deploy Hook
+
+Render's GitHub auto-deploy webhook can be supplemented with a GitHub Actions deploy hook trigger. This repo includes `.github/workflows/deploy-render.yml`, which runs after every push to `main` and sends a `POST` request to Render's Deploy Hook URL.
+
+To configure it:
+
+1. In Render, open the API service.
+2. Go to Settings -> Deploy.
+3. Copy the Deploy Hook URL.
+4. In GitHub, open Repository -> Settings -> Secrets and Variables -> Actions.
+5. Create a repository secret named:
+
+```text
+RENDER_DEPLOY_HOOK_URL
+```
+
+Set the secret value to the Render Deploy Hook URL.
+
+Verification:
+
+- The workflow appears under GitHub Actions as `Deploy Render API`.
+- A merge to `main` triggers the workflow.
+- The workflow's curl step succeeds.
+- Render's event log shows a deployment shortly after the workflow runs.
+
 ## Supabase
 
 Use the Supabase connection string as `DATABASE_URL`, but keep the SQLAlchemy driver prefix:

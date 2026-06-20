@@ -222,6 +222,8 @@ class OpenAIReportGenerator:
                             "requirements": [
                                 "Use cautious attribution such as 'public reporting suggests' unless the source is the representative's own site.",
                                 "Prefer snippets that explain rationale, such as voter suppression, disenfranchisement, documentation burden, election integrity, or voting access.",
+                                "Use sources that mention the representative by name or clearly come from the representative's official account.",
+                                "Do not cite unrelated posts from other representatives or generic bill trackers as evidence of this representative's rationale.",
                                 "Do not use generic bill-summary snippets as the reason unless no better source exists.",
                                 "Do not claim support or criticism unless the snippets clearly support it.",
                                 "Return at most three source links used.",

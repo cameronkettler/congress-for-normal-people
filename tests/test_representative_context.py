@@ -77,7 +77,7 @@ def test_representative_position_detail_appends_grounded_public_reason(monkeypat
         bioguide_id="C001130",
     )
 
-    signal, detail = asyncio.run(
+    signal, detail, sources = asyncio.run(
         routes.enrich_representative_position_signal(
             bill={"congress_bill_id": "hr-22-119", "title": "SAVE Act"},
             representative=representative,
@@ -89,7 +89,7 @@ def test_representative_position_detail_appends_grounded_public_reason(monkeypat
     assert signal == "Voted against"
     assert "Public-position context" in detail
     assert "voting barriers" in detail
-    assert "https://example.com/statement" in detail
+    assert sources[0].url == "https://example.com/statement"
 
 
 def test_representative_position_signal_upgrades_no_direct_signal_from_public_evidence(monkeypatch):
@@ -123,7 +123,7 @@ def test_representative_position_signal_upgrades_no_direct_signal_from_public_ev
         bioguide_id="C001130",
     )
 
-    signal, detail = asyncio.run(
+    signal, detail, sources = asyncio.run(
         routes.enrich_representative_position_signal(
             bill={"congress_bill_id": "hr-22-119", "title": "SAVE Act"},
             representative=representative,
@@ -134,6 +134,8 @@ def test_representative_position_signal_upgrades_no_direct_signal_from_public_ev
 
     assert signal == "Publicly criticized"
     assert "voter suppression" in detail
+    assert not detail.startswith("No sponsor or cosponsor")
+    assert sources[0].url == "https://example.com/news"
 
 
 def test_representative_position_signal_reports_public_search_when_reason_unclear(monkeypatch):
@@ -162,7 +164,7 @@ def test_representative_position_signal_reports_public_search_when_reason_unclea
         bioguide_id="C001130",
     )
 
-    signal, detail = asyncio.run(
+    signal, detail, sources = asyncio.run(
         routes.enrich_representative_position_signal(
             bill={"congress_bill_id": "hr-22-119", "title": "SAVE Act"},
             representative=representative,
@@ -173,4 +175,40 @@ def test_representative_position_signal_reports_public_search_when_reason_unclea
 
     assert signal == "Public search reviewed"
     assert "Top result" in detail
-    assert "https://example.com/coverage" in detail
+    assert sources[0].url == "https://example.com/coverage"
+
+
+def test_formatted_position_sources_filters_unrelated_sources():
+    representative = RepresentativeRecord(
+        name="Crockett, Jasmine",
+        chamber="House",
+        party="Democratic",
+        state="TX",
+        district="30",
+        bioguide_id="C001130",
+    )
+    search_results = [
+        SearchResult(
+            title="Crockett criticizes SAVE Act",
+            link="https://example.com/crockett",
+            snippet="Jasmine Crockett called the bill voter suppression.",
+            source="Example",
+        ),
+        SearchResult(
+            title="Cosponsored - pass the SAVE America Act",
+            link="https://www.facebook.com/RepJohnJames/posts/123",
+            snippet="Rep. John James supports the bill.",
+            source="Facebook",
+        ),
+    ]
+    reason = {
+        "sources": [
+            {"title": "Cosponsored - pass the SAVE America Act", "url": "https://www.facebook.com/RepJohnJames/posts/123"},
+            {"title": "Crockett criticizes SAVE Act", "url": "https://example.com/crockett"},
+        ]
+    }
+
+    sources = routes.formatted_position_sources(reason, search_results, representative)
+
+    assert sources[0].url == "https://example.com/crockett"
+    assert all("RepJohnJames" not in str(source.url) for source in sources)

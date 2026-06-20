@@ -53,6 +53,13 @@ type RepresentativeBillSignal = {
   representative: RepresentativeRecord;
   signal: string;
   detail: string;
+  sources?: SourceReference[];
+};
+
+type SourceReference = {
+  label: string;
+  url?: string | null;
+  confidence?: string;
 };
 
 type StakeholderInsight = {
@@ -779,6 +786,29 @@ function RepresentativeContext({ signals }: { signals: RepresentativeBillSignal[
               </span>
             </div>
             <p className="text-xs leading-5 text-slate-600">{signal.detail}</p>
+            {signal.sources && signal.sources.length > 0 ? (
+              <div className="mt-2">
+                <h5 className="text-xs font-semibold uppercase text-slate-500">Sources</h5>
+                <ul className="mt-1 grid gap-1">
+                  {signal.sources.map((source, index) => (
+                    <li key={`${source.url ?? source.label}-${index}`} className="text-xs leading-5">
+                      {source.url ? (
+                        <a
+                          href={source.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-civic underline-offset-2 hover:underline"
+                        >
+                          {source.label}
+                        </a>
+                      ) : (
+                        <span className="text-slate-600">{source.label}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </article>
         ))}
       </div>

@@ -32,6 +32,7 @@ from packages.shared.schemas import (
     MonitoringRecentResponse,
     RepresentativeBillSignal,
     RepresentativeRecord,
+    SourceReference,
     UserProfileResponse,
 )
 
@@ -229,13 +230,20 @@ async def representative_context_for_bill(
         else:
             signal = "No direct signal found"
             detail = "No sponsor or cosponsor relationship was found in the available Congress.gov data."
-        signal, detail = await enrich_representative_position_signal(
+        signal, detail, sources = await enrich_representative_position_signal(
             bill=response.bill.model_dump(mode="json"),
             representative=representative,
             signal=signal,
             detail=detail,
         )
-        signals.append(RepresentativeBillSignal(representative=representative, signal=signal, detail=detail))
+        signals.append(
+            RepresentativeBillSignal(
+                representative=representative,
+                signal=signal,
+                detail=detail,
+                sources=sources,
+            )
+        )
     return signals
 
 
@@ -273,10 +281,10 @@ async def enrich_representative_position_signal(
     representative: RepresentativeRecord,
     signal: str,
     detail: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, list[SourceReference]]:
     search_results = await search_representative_position(bill, representative)
     if not search_results:
-        return signal, detail
+        return signal, detail, []
 
     reason = await OpenAIReportGenerator().generate_representative_position_reason(
         bill=bill,
@@ -285,17 +293,106 @@ async def enrich_representative_position_signal(
         search_results=[search_result_payload(item) for item in search_results],
     )
     if not reason or not reason.get("reason"):
-        return public_search_reviewed_signal(signal), public_search_reviewed_detail(detail, search_results)
+        return (
+            public_search_reviewed_signal(signal),
+            public_search_reviewed_detail(detail, search_results),
+            fallback_position_sources(search_results),
+        )
 
     enriched_signal = public_position_signal(signal, str(reason.get("position", "")))
 
-    source_links = [
-        f"{source.get('title')} ({source.get('url')})"
-        for source in reason.get("sources", [])
-        if isinstance(source, dict) and source.get("title") and source.get("url")
+    sources = formatted_position_sources(reason, search_results, representative)
+    return enriched_signal, representative_context_detail(detail, str(reason["reason"])), sources
+
+
+def representative_context_detail(base_detail: str, reason: str) -> str:
+    if base_detail.startswith("No sponsor or cosponsor relationship"):
+        return f"Public-position context: {reason}"
+    return f"{base_detail} Public-position context: {reason}"
+
+
+def formatted_position_sources(
+    reason: dict[str, object],
+    search_results: list[SearchResult],
+    representative: RepresentativeRecord,
+) -> list[SourceReference]:
+    allowed = relevant_position_sources(search_results, representative)
+    allowed_by_url = {item.link: item for item in allowed}
+    sources: list[SourceReference] = []
+    for source in reason.get("sources", []):
+        if not isinstance(source, dict):
+            continue
+        url = str(source.get("url") or "")
+        item = allowed_by_url.get(url)
+        if not item:
+            continue
+        sources.append(SourceReference(label=source_label(item), url=item.link, confidence="medium"))
+        if len(sources) == 2:
+            break
+
+    if not sources and allowed:
+        sources.append(SourceReference(label=source_label(allowed[0]), url=allowed[0].link, confidence="low"))
+    if not sources and len(search_results) == 1 and source_quality_score(search_results[0]) >= 0:
+        sources.append(
+            SourceReference(label=source_label(search_results[0]), url=search_results[0].link, confidence="low")
+        )
+    return sources
+
+
+def fallback_position_sources(search_results: list[SearchResult]) -> list[SourceReference]:
+    return [
+        SourceReference(label=source_label(item), url=item.link, confidence="low")
+        for item in search_results[:2]
+        if source_quality_score(item) >= 0
     ]
-    source_text = f" Sources: {'; '.join(source_links)}" if source_links else ""
-    return enriched_signal, f"{detail} Public-position context: {reason['reason']}{source_text}"
+
+
+def relevant_position_sources(
+    search_results: list[SearchResult],
+    representative: RepresentativeRecord,
+) -> list[SearchResult]:
+    rep_terms = representative_name_terms(representative.name)
+    return [
+        item
+        for item in search_results
+        if result_mentions_representative(item, rep_terms) and source_quality_score(item) >= 0
+    ]
+
+
+def representative_name_terms(name: str) -> set[str]:
+    normalized = name.replace(",", " ")
+    parts = [part.casefold() for part in normalized.split() if len(part) > 2]
+    return set(parts)
+
+
+def result_mentions_representative(item: SearchResult, rep_terms: set[str]) -> bool:
+    text = f"{item.title} {item.snippet} {item.source} {item.link}".casefold()
+    return any(term in text for term in rep_terms)
+
+
+def source_label(item: SearchResult) -> str:
+    text = position_search_text(item)
+    source = item.source or item.link
+    if "congress.gov" in text:
+        return "Congress.gov bill page"
+    if "tiktok.com" in text:
+        return "Public video clip"
+    if "facebook.com" in text:
+        return "Public Facebook post"
+    if "instagram.com" in text:
+        return "Public Instagram post"
+    if "house.gov" in text or ".gov" in text:
+        return "Official public source"
+    if "roll-call" in text or "scorecard" in text:
+        return "Vote summary"
+    return compact_source_title(item.title or source)
+
+
+def compact_source_title(title: str) -> str:
+    cleaned = " ".join(title.split())
+    if len(cleaned) <= 90:
+        return cleaned
+    return f"{cleaned[:87].rstrip()}..."
 
 
 def public_search_reviewed_signal(existing_signal: str) -> str:
@@ -367,8 +464,8 @@ async def search_representative_position(
 
 def ranked_position_search_results(results: list[SearchResult]) -> list[SearchResult]:
     def score(item: SearchResult) -> int:
-        text = f"{item.title} {item.snippet} {item.source} {item.link}".casefold()
-        value = 0
+        text = position_search_text(item)
+        value = source_quality_score(item)
         for term in (
             "voter suppression",
             "disenfranchise",
@@ -384,12 +481,24 @@ def ranked_position_search_results(results: list[SearchResult]) -> list[SearchRe
         ):
             if term in text:
                 value += 3
-        for low_value_domain in ("congress.gov", "instagram.com"):
-            if low_value_domain in text:
-                value -= 2
         return value
 
     return sorted(results, key=score, reverse=True)
+
+
+def source_quality_score(item: SearchResult) -> int:
+    text = position_search_text(item)
+    value = 0
+    for low_value_domain in ("congress.gov", "instagram.com", "tiktok.com", "facebook.com"):
+        if low_value_domain in text:
+            value -= 4
+    if "facebook.com/rep" in text or "instagram.com/rep" in text:
+        value += 2
+    return value
+
+
+def position_search_text(item: SearchResult) -> str:
+    return f"{item.title} {item.snippet} {item.source} {item.link}".casefold()
 
 
 def search_result_payload(item: SearchResult) -> dict[str, str]:

@@ -40,6 +40,7 @@ class RepresentativeBillSignal(BaseModel):
     representative: RepresentativeRecord
     signal: str
     detail: str
+    sources: list[SourceReference] = Field(default_factory=list)
 
 
 class UserProfileResponse(BaseModel):

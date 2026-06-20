@@ -52,6 +52,43 @@ class _FakeAsyncClient:
         )
 
 
+class _FakeRepresentativePositionAsyncClient:
+    last_request: dict | None = None
+
+    def __init__(self, **_: object) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+    async def post(self, url: str, **kwargs: object) -> httpx.Response:
+        self.__class__.last_request = {"url": url, **kwargs}
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={
+                "output": [
+                    {
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": (
+                                    '{"position":"criticizes",'
+                                    '"reason":"Public reporting says the representative opposed the bill because of concerns that documentary proof requirements could burden eligible voters.",'
+                                    '"sources":[{"title":"Member statement","url":"https://example.com/statement"}],'
+                                    '"confidence":"medium"}'
+                                ),
+                            }
+                        ]
+                    }
+                ]
+            },
+        )
+
+
 def test_openai_report_generator_posts_grounded_state_and_returns_structured_report(monkeypatch):
     _FakeAsyncClient.last_request = None
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
@@ -113,3 +150,32 @@ def test_openai_report_generator_posts_grounded_state_and_returns_structured_rep
     assert _FakeAsyncClient.last_request["headers"]["Authorization"] == "Bearer test-key"
     assert _FakeAsyncClient.last_request["json"]["model"] == "gpt-5.4-mini"
     assert _FakeAsyncClient.last_request["json"]["text"]["format"]["type"] == "json_schema"
+
+
+def test_openai_report_generator_summarizes_representative_position_evidence(monkeypatch):
+    _FakeRepresentativePositionAsyncClient.last_request = None
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeRepresentativePositionAsyncClient)
+    settings = Settings(openai_api_key="test-key", openai_api_live=True)
+
+    reason = asyncio.run(
+        OpenAIReportGenerator(settings).generate_representative_position_reason(
+            bill={"congress_bill_id": "hr-22-119", "title": "SAVE Act"},
+            representative={"name": "Crockett, Jasmine", "state": "TX", "district": "30"},
+            signal="Voted against",
+            search_results=[
+                {
+                    "title": "Member statement",
+                    "url": "https://example.com/statement",
+                    "snippet": "The representative opposed documentary proof requirements.",
+                    "source": "example.com",
+                }
+            ],
+        )
+    )
+
+    assert reason is not None
+    assert reason["position"] == "criticizes"
+    assert "documentary proof" in reason["reason"]
+    assert _FakeRepresentativePositionAsyncClient.last_request is not None
+    request = _FakeRepresentativePositionAsyncClient.last_request["json"]
+    assert request["text"]["format"]["name"] == "civic_pulse_representative_position_reason"

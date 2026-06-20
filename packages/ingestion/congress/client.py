@@ -129,6 +129,62 @@ class CongressClient:
             response.raise_for_status()
             return response.json().get("cosponsors", [])
 
+    async def list_house_votes_for_bill(self, bill_id: str) -> list[dict[str, Any]]:
+        if not self.settings.congress_api_key:
+            return []
+
+        congress, bill_type, number = self._parse_bill_id(bill_id)
+        bill_type = bill_type.upper()
+        votes: list[dict[str, Any]] = []
+        async with httpx.AsyncClient(timeout=httpx.Timeout(self.settings.congress_api_timeout_seconds)) as client:
+            for session in ("2", "1"):
+                offset = 0
+                while offset < 1000:
+                    url = f"{self.base_url}/house-vote/{congress}/{session}"
+                    response = await client.get(
+                        url,
+                        params={**self._request_params(), "limit": 250, "offset": offset},
+                    )
+                    response.raise_for_status()
+                    page = response.json().get("houseRollCallVotes", [])
+                    votes.extend(
+                        vote
+                        for vote in page
+                        if str(vote.get("legislationType", "")).upper() == bill_type
+                        and str(vote.get("legislationNumber", "")) == number
+                    )
+                    if len(page) < 250:
+                        break
+                    offset += 250
+        return sorted(votes, key=lambda vote: str(vote.get("startDate", "")), reverse=True)
+
+    async def get_house_member_vote(self, vote: dict[str, Any], representative: RepresentativeRecord) -> dict[str, Any] | None:
+        if not self.settings.congress_api_key:
+            return None
+
+        congress = str(vote.get("congress", ""))
+        session = str(vote.get("sessionNumber") or vote.get("session") or "")
+        vote_number = str(vote.get("rollCallNumber") or vote.get("voteNumber") or "")
+        if not congress or not session or not vote_number:
+            return None
+
+        url = f"{self.base_url}/house-vote/{congress}/{session}/{vote_number}/members"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(self.settings.congress_api_timeout_seconds)) as client:
+            response = await client.get(url, params={**self._request_params(), "limit": 250})
+            response.raise_for_status()
+            payload = response.json().get("houseRollCallVoteMemberVotes", {})
+
+        for item in payload.get("results", []):
+            if self._vote_matches_representative(item, representative):
+                return {
+                    "vote_cast": item.get("voteCast", ""),
+                    "vote_question": payload.get("voteQuestion") or vote.get("voteQuestion", ""),
+                    "result": payload.get("result") or vote.get("result", ""),
+                    "roll_call_number": payload.get("rollCallNumber") or vote_number,
+                    "start_date": payload.get("startDate") or vote.get("startDate", ""),
+                }
+        return None
+
     async def list_recent_bills(self, limit: int = 10) -> list[BillRecord]:
         if not self.settings.congress_api_key:
             return [self._demo_bill(f"hr-{1200 + index}-119") for index in range(1, limit + 1)]
@@ -255,24 +311,21 @@ class CongressClient:
             return congress, bill_type, number
         return "119", parts[0], parts[-1]
 
-    def _representative_from_member(self, member: dict[str, Any], chamber: str) -> RepresentativeRecord:
-        terms = member.get("terms", {}).get("item", []) if isinstance(member.get("terms"), dict) else []
-        latest_term = terms[-1] if terms else {}
-        return RepresentativeRecord(
-            name=member.get("directOrderName") or member.get("name") or member.get("invertedOrderName") or "Unknown member",
-            chamber=chamber,
-            party=member.get("partyName") or latest_term.get("partyName") or "Unknown",
-            state=member.get("state") or latest_term.get("stateCode") or "",
-            district=str(member.get("district") or latest_term.get("district") or "") or None,
-            bioguide_id=member.get("bioguideId"),
-            official_url=member.get("officialUrl"),
-        )
+    def _vote_matches_representative(
+        self,
+        vote_item: dict[str, Any],
+        representative: RepresentativeRecord,
+    ) -> bool:
+        if representative.bioguide_id and vote_item.get("bioguideId") == representative.bioguide_id:
+            return True
 
-    def _member_chamber(self, member: dict[str, Any]) -> str:
-        terms = member.get("terms", {}).get("item", []) if isinstance(member.get("terms"), dict) else []
-        latest = terms[-1] if terms else {}
-        chamber = latest.get("chamber", "")
-        return "Senate" if "Senate" in chamber else "House"
+        vote_name = " ".join(
+            part
+            for part in [str(vote_item.get("firstName", "")), str(vote_item.get("lastName", ""))]
+            if part
+        ).casefold()
+        rep_name = representative.name.casefold()
+        return bool(vote_name and (vote_name in rep_name or rep_name in vote_name))
 
     def _demo_bill(self, bill_id: str) -> BillRecord:
         title = "Responsible Artificial Intelligence in Public Services Act"

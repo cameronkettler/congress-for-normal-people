@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     openai_api_live: bool = False
     openai_reasoning_effort: str = "low"
     openai_api_timeout_seconds: float = 120.0
+    serpapi_api_key: str | None = None
+    serpapi_enabled: bool = False
+    serpapi_timeout_seconds: float = 20.0
+    rep_position_search_results: int = 5
     monitoring_topics: str = DEFAULT_MONITORING_TOPICS
     monitoring_poll_limit: int = 10
     job_token: str | None = None

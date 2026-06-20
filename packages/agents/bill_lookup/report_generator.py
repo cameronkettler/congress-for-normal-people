@@ -52,6 +52,42 @@ class OpenAIReportGenerator:
             "confidence": report.get("confidence") or fallback["confidence"],
         }
 
+    async def generate_representative_position_reason(
+        self,
+        *,
+        bill: dict[str, Any],
+        representative: dict[str, Any],
+        signal: str,
+        search_results: list[dict[str, str]],
+    ) -> dict[str, Any] | None:
+        if not self.enabled or not search_results:
+            return None
+
+        payload = self._build_representative_position_payload(
+            bill=bill,
+            representative=representative,
+            signal=signal,
+            search_results=search_results,
+        )
+        try:
+            async with httpx.AsyncClient(timeout=self.settings.openai_api_timeout_seconds) as client:
+                response = await client.post(
+                    self.endpoint,
+                    headers={
+                        "Authorization": f"Bearer {self.settings.openai_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+                response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+
+        report = self._extract_json(response.json())
+        if not report or report.get("position") == "unclear":
+            return None
+        return report
+
     def _build_payload(self, state: dict[str, Any]) -> dict[str, Any]:
         return {
             "model": self.settings.openai_model,
@@ -140,6 +176,87 @@ class OpenAIReportGenerator:
                                 "items": {"type": "string"},
                                 "minItems": 1,
                                 "maxItems": 5,
+                            },
+                            "confidence": {
+                                "type": "string",
+                                "enum": ["low", "medium", "high"],
+                            },
+                        },
+                    },
+                }
+            },
+        }
+
+    def _build_representative_position_payload(
+        self,
+        *,
+        bill: dict[str, Any],
+        representative: dict[str, Any],
+        signal: str,
+        search_results: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        return {
+            "model": self.settings.openai_model,
+            "reasoning": {"effort": self.settings.openai_reasoning_effort},
+            "input": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You identify whether public search-result snippets explain why a member of "
+                        "Congress supports or criticizes a bill. Use only the provided snippets and "
+                        "links. Do not use outside knowledge. If the snippets do not explain a reason, "
+                        "return position='unclear' and an empty reason."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "task": "Summarize the representative's public reason for their position in 1-2 sentences.",
+                            "bill": bill,
+                            "representative": representative,
+                            "known_signal": signal,
+                            "search_results": search_results,
+                            "requirements": [
+                                "Use cautious attribution such as 'public reporting suggests' unless the source is the representative's own site.",
+                                "Do not claim support or criticism unless the snippets clearly support it.",
+                                "Return at most three source links used.",
+                            ],
+                        },
+                        default=str,
+                    ),
+                },
+            ],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "civic_pulse_representative_position_reason",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["position", "reason", "sources", "confidence"],
+                        "properties": {
+                            "position": {
+                                "type": "string",
+                                "enum": ["supports", "criticizes", "unclear"],
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "One or two sentences grounded only in the provided search snippets.",
+                            },
+                            "sources": {
+                                "type": "array",
+                                "maxItems": 3,
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["title", "url"],
+                                    "properties": {
+                                        "title": {"type": "string"},
+                                        "url": {"type": "string"},
+                                    },
+                                },
                             },
                             "confidence": {
                                 "type": "string",

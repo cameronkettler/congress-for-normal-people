@@ -16,11 +16,13 @@ from apps.api.app.auth import (
 )
 from packages.agents.bill_lookup import BillLookupWorkflow, ProviderLookupError
 from packages.agents.bill_lookup.input_resolver import BillInputResolutionError
+from packages.agents.bill_lookup.report_generator import OpenAIReportGenerator
 from packages.agents.bill_monitoring import BillMonitoringWorkflow
 from packages.db import get_session
 from packages.db.models import Bill, BillMonitoring, GeneratedReport, User, UserProfile, UserSession, UserTopicPreference
 from packages.ingestion.census import CensusGeocoderClient
 from packages.ingestion.congress import CongressClient
+from packages.ingestion.search import SearchResult, SerpApiClient
 from packages.jobs.poll_new_bills import poll_new_bills
 from packages.shared.config import get_settings
 from packages.shared.schemas import (
@@ -204,6 +206,7 @@ async def representative_context_for_bill(
 
     representatives, _ = await representatives_for_profile(profile)
     cosponsors = await safe_bill_cosponsors(response.bill.congress_bill_id)
+    house_votes = await safe_house_votes(response.bill.congress_bill_id)
     cosponsor_ids = {
         item.get("bioguideId")
         for item in cosponsors
@@ -214,7 +217,10 @@ async def representative_context_for_bill(
     signals: list[RepresentativeBillSignal] = []
     for representative in representatives:
         rep_name = representative.name.casefold()
-        if rep_name and (rep_name in sponsor_name or sponsor_name in rep_name):
+        vote_signal = await representative_vote_signal(response.bill.congress_bill_id, representative, house_votes)
+        if vote_signal:
+            signal, detail = vote_signal
+        elif rep_name and (rep_name in sponsor_name or sponsor_name in rep_name):
             signal = "Sponsor"
             detail = "Your representative is listed as the bill sponsor, which is a formal support signal."
         elif representative.bioguide_id and representative.bioguide_id in cosponsor_ids:
@@ -223,8 +229,132 @@ async def representative_context_for_bill(
         else:
             signal = "No direct signal found"
             detail = "No sponsor or cosponsor relationship was found in the available Congress.gov data."
+        detail = await enrich_representative_position_detail(
+            bill=response.bill.model_dump(mode="json"),
+            representative=representative,
+            signal=signal,
+            detail=detail,
+        )
         signals.append(RepresentativeBillSignal(representative=representative, signal=signal, detail=detail))
     return signals
+
+
+async def representative_vote_signal(
+    bill_id: str,
+    representative: RepresentativeRecord,
+    house_votes: list[dict[str, object]],
+) -> tuple[str, str] | None:
+    if representative.chamber != "House" or not house_votes:
+        return None
+
+    for vote in preferred_house_votes(house_votes):
+        member_vote = await safe_house_member_vote(vote, representative)
+        if not member_vote:
+            continue
+        vote_cast = str(member_vote.get("vote_cast", "")).strip()
+        if not vote_cast:
+            continue
+        signal = vote_signal_label(vote_cast)
+        question = member_vote.get("vote_question") or "the recorded House vote"
+        result = member_vote.get("result") or "recorded"
+        roll_call = member_vote.get("roll_call_number")
+        detail = (
+            f"Your representative voted {vote_cast} on {question}. "
+            f"The House vote result was {result}"
+            f"{f' (roll call {roll_call})' if roll_call else ''}."
+        )
+        return signal, detail
+    return None
+
+
+async def enrich_representative_position_detail(
+    *,
+    bill: dict[str, object],
+    representative: RepresentativeRecord,
+    signal: str,
+    detail: str,
+) -> str:
+    if signal == "No direct signal found":
+        return detail
+
+    search_results = await search_representative_position(bill, representative)
+    if not search_results:
+        return detail
+
+    reason = await OpenAIReportGenerator().generate_representative_position_reason(
+        bill=bill,
+        representative=representative.model_dump(mode="json"),
+        signal=signal,
+        search_results=[search_result_payload(item) for item in search_results],
+    )
+    if not reason or not reason.get("reason"):
+        return detail
+
+    source_links = [
+        f"{source.get('title')} ({source.get('url')})"
+        for source in reason.get("sources", [])
+        if isinstance(source, dict) and source.get("title") and source.get("url")
+    ]
+    source_text = f" Sources: {'; '.join(source_links)}" if source_links else ""
+    return f"{detail} Public-position context: {reason['reason']}{source_text}"
+
+
+async def search_representative_position(
+    bill: dict[str, object],
+    representative: RepresentativeRecord,
+) -> list[SearchResult]:
+    bill_id = str(bill.get("congress_bill_id") or "")
+    title = str(bill.get("title") or "")
+    rep_name = representative.name
+    queries = [
+        f'"{rep_name}" "{bill_id}"',
+        f'"{rep_name}" "{title}"',
+        f'"{rep_name}" "{title}" support oppose',
+    ]
+
+    client = SerpApiClient()
+    results: list[SearchResult] = []
+    seen_links: set[str] = set()
+    for query in queries:
+        for item in await client.search(query):
+            if item.link in seen_links:
+                continue
+            seen_links.add(item.link)
+            results.append(item)
+            if len(results) >= get_settings().rep_position_search_results:
+                return results
+    return results
+
+
+def search_result_payload(item: SearchResult) -> dict[str, str]:
+    return {
+        "title": item.title,
+        "url": item.link,
+        "snippet": item.snippet,
+        "source": item.source,
+    }
+
+
+def preferred_house_votes(votes: list[dict[str, object]]) -> list[dict[str, object]]:
+    def score(vote: dict[str, object]) -> tuple[int, str]:
+        question = str(vote.get("voteQuestion", "")).casefold()
+        is_final = any(term in question for term in ("pass", "agree", "concur", "suspend"))
+        return (1 if is_final else 0, str(vote.get("startDate", "")))
+
+    return sorted(votes, key=score, reverse=True)
+
+
+def vote_signal_label(vote_cast: str) -> str:
+    normalized = vote_cast.strip().casefold()
+    if normalized in {"aye", "yea", "yes"}:
+        return "Voted for"
+    if normalized in {"nay", "no"}:
+        return "Voted against"
+    if normalized == "present":
+        return "Voted present"
+    if normalized == "not voting":
+        return "Did not vote"
+    return f"Voted {vote_cast}"
 
 
 async def safe_bill_cosponsors(bill_id: str) -> list[dict[str, object]]:
@@ -232,6 +362,23 @@ async def safe_bill_cosponsors(bill_id: str) -> list[dict[str, object]]:
         return await CongressClient().list_bill_cosponsors(bill_id)
     except (httpx.TimeoutException, httpx.HTTPError, Exception):
         return []
+
+
+async def safe_house_votes(bill_id: str) -> list[dict[str, object]]:
+    try:
+        return await CongressClient().list_house_votes_for_bill(bill_id)
+    except (httpx.TimeoutException, httpx.HTTPError, Exception):
+        return []
+
+
+async def safe_house_member_vote(
+    vote: dict[str, object],
+    representative: RepresentativeRecord,
+) -> dict[str, object] | None:
+    try:
+        return await CongressClient().get_house_member_vote(vote, representative)
+    except (httpx.TimeoutException, httpx.HTTPError, Exception):
+        return None
 
 
 def monitoring_bill_rows(rows: list[Bill]) -> list[MonitoringBill]:

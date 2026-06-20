@@ -27,7 +27,7 @@ class OpenAIReportGenerator:
 
         payload = self._build_payload(state)
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=self.settings.openai_api_timeout_seconds) as client:
                 response = await client.post(
                     self.endpoint,
                     headers={

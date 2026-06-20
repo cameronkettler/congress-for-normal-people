@@ -24,7 +24,7 @@ class FECClient:
                 "confidence": "low",
             }
 
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=self.settings.fec_api_timeout_seconds) as client:
             response = await client.get(
                 f"{self.base_url}/candidates/search/",
                 params={"api_key": self.settings.fec_api_key, "q": sponsor_name, "per_page": 5},

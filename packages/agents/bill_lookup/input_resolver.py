@@ -53,7 +53,7 @@ class BillInputResolver:
 
     async def _resolve_with_openai(self, value: str) -> BillInputResolution | None:
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with httpx.AsyncClient(timeout=self.settings.openai_api_timeout_seconds) as client:
                 response = await client.post(
                     self.endpoint,
                     headers={

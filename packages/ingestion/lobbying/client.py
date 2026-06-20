@@ -16,7 +16,7 @@ class LobbyingDisclosureClient:
         url = f"{self.settings.lobbying_disclosure_base_url}/filings/"
         headers = self._auth_headers()
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with httpx.AsyncClient(timeout=self.settings.lobbying_api_timeout_seconds) as client:
                 response = await client.get(
                     url,
                     headers=headers,

@@ -9,14 +9,19 @@ from packages.shared.topics import DEFAULT_MONITORING_TOPICS
 class Settings(BaseSettings):
     database_url: str = "sqlite:///./civic_pulse.db"
     congress_api_key: str | None = None
+    congress_api_timeout_seconds: float = 300.0
+    congress_recent_api_timeout_seconds: float = 30.0
     fec_api_key: str | None = None
+    fec_api_timeout_seconds: float = 60.0
     lobbying_disclosure_api_key: str | None = None
     lobbying_disclosure_base_url: str = "https://lda.gov/api/v1"
     lobbying_api_live: bool = False
+    lobbying_api_timeout_seconds: float = 60.0
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.4-mini"
     openai_api_live: bool = False
     openai_reasoning_effort: str = "low"
+    openai_api_timeout_seconds: float = 120.0
     monitoring_topics: str = DEFAULT_MONITORING_TOPICS
     monitoring_poll_limit: int = 10
     job_token: str | None = None

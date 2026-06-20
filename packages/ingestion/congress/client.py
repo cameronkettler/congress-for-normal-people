@@ -26,7 +26,9 @@ class CongressClient:
 
         congress, bill_type, number = self._parse_bill_id(bill_id)
         url = f"{self.base_url}/bill/{congress}/{bill_type}/{number}"
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(self.settings.congress_api_timeout_seconds)
+        ) as client:
             response = await client.get(url, params={"api_key": self.settings.congress_api_key})
             response.raise_for_status()
             payload = response.json().get("bill", {})
@@ -69,7 +71,9 @@ class CongressClient:
 
         url = f"{self.base_url}/bill"
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(self.settings.congress_recent_api_timeout_seconds)
+            ) as client:
                 response = await client.get(
                     url,
                     params={

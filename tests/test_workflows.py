@@ -1,10 +1,13 @@
 import asyncio
 
+import httpx
+
 from packages.agents.bill_lookup import BillLookupWorkflow
 from packages.ingestion.congress import CongressClient
 from packages.ingestion.fec import FECClient
 from packages.ingestion.lobbying import LobbyingDisclosureClient
 from packages.shared.config import Settings
+from packages.shared.schemas import BillRecord
 from packages.shared.topics import DEFAULT_MONITORING_TOPICS
 
 
@@ -79,3 +82,38 @@ def test_bill_lookup_workflow_extracts_unique_stakeholder_names():
         "National Affordable Housing Management Association",
     ]
     assert insights[1].context == "Issue area: Housing affordability"
+
+
+class _FailingFinanceClient:
+    async def get_candidate_finance_patterns(self, *_: object):
+        raise httpx.ReadTimeout("finance timed out")
+
+
+class _FailingLobbyingClient:
+    async def search_activity(self, *_: object):
+        raise httpx.ReadTimeout("lobbying timed out")
+
+
+def test_bill_lookup_workflow_degrades_optional_provider_failures():
+    workflow = BillLookupWorkflow(
+        fec_client=_FailingFinanceClient(),
+        lobbying_client=_FailingLobbyingClient(),
+        settings=Settings(openai_api_live=False),
+    )
+    bill = BillRecord(
+        congress_bill_id="hr-22-119",
+        title="SAVE Act",
+        summary="Requires proof of citizenship for federal voter registration.",
+        sponsor="Rep. Roy, Chip [R-TX-21]",
+        latest_action="Received in the Senate.",
+        status="introduced",
+        topic="Elections",
+    )
+
+    finance = asyncio.run(workflow.retrieve_finance({"bill": bill}))
+    lobbying = asyncio.run(workflow.retrieve_lobbying({"bill": bill}))
+
+    assert finance["finance"]["source"] == "openfec_unavailable"
+    assert finance["finance"]["confidence"] == "low"
+    assert lobbying["lobbying"]["source"] == "lobbying_disclosure_unavailable"
+    assert lobbying["lobbying"]["registrations"] == []

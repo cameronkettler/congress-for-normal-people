@@ -2,6 +2,7 @@ import logging
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -13,7 +14,7 @@ from apps.api.app.auth import (
     normalize_email,
     verify_password,
 )
-from packages.agents.bill_lookup import BillLookupWorkflow
+from packages.agents.bill_lookup import BillLookupWorkflow, ProviderLookupError
 from packages.agents.bill_lookup.input_resolver import BillInputResolutionError
 from packages.agents.bill_monitoring import BillMonitoringWorkflow
 from packages.db import get_session
@@ -95,23 +96,64 @@ async def lookup_bill(payload: BillLookupRequest, db: Session = Depends(get_sess
         response = await BillLookupWorkflow().run(payload.bill_id)
     except BillInputResolutionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ProviderLookupError as exc:
+        log_lookup_failure(payload.bill_id, exc.provider, exc)
+        return lookup_error_response(exc.provider)
+    except httpx.TimeoutException as exc:
+        log_lookup_failure(payload.bill_id, "External provider", exc)
+        return lookup_error_response("External provider")
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             raise HTTPException(
                 status_code=404,
                 detail="Congress.gov did not find that bill number. Check the bill type, number, and Congress.",
             ) from exc
-        raise
-    bill = upsert_bill(db, response)
-    db.add(
-        GeneratedReport(
-            bill_id=bill.id,
-            generated_summary=response.generated_summary,
-            generated_analysis=response.generated_analysis,
+        log_lookup_failure(payload.bill_id, "External provider", exc)
+        return lookup_error_response("External provider")
+    except httpx.HTTPError as exc:
+        log_lookup_failure(payload.bill_id, "External provider", exc)
+        return lookup_error_response("External provider")
+    except Exception as exc:
+        log_lookup_failure(payload.bill_id, "Application", exc)
+        return lookup_error_response("Application")
+    try:
+        bill = upsert_bill(db, response)
+        db.add(
+            GeneratedReport(
+                bill_id=bill.id,
+                generated_summary=response.generated_summary,
+                generated_analysis=response.generated_analysis,
+            )
         )
-    )
-    db.commit()
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        log_lookup_failure(payload.bill_id, "Application", exc)
+        return lookup_error_response("Application")
     return response
+
+
+def lookup_error_response(provider: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=502,
+        content={
+            "error": "Bill lookup failed",
+            "provider": provider,
+            "detail": "External data source unavailable or timed out",
+        },
+    )
+
+
+def log_lookup_failure(bill_query: str, provider: str, exc: Exception) -> None:
+    logger.exception(
+        "bill lookup provider failure",
+        extra={
+            "endpoint": "/api/bills/lookup",
+            "bill_query": bill_query,
+            "provider": provider,
+            "error_type": exc.__class__.__name__,
+        },
+    )
 
 
 @router.get("/monitoring/recent", response_model=MonitoringRecentResponse)

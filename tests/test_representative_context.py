@@ -65,6 +65,24 @@ def test_representative_cosponsor_matching_handles_weber_name_and_bioguide_varia
     assert routes.representative_is_cosponsor(representative, cosponsors)
 
 
+def test_representative_position_queries_are_neutral_and_stance_oriented():
+    queries = routes.representative_position_queries(
+        rep_name="Weber, Randy K. Sr.",
+        bill_id="hr-22-119",
+        title="SAVE Act",
+    )
+
+    assert queries == [
+        '"Weber, Randy K. Sr." "SAVE Act" supports',
+        '"Weber, Randy K. Sr." "SAVE Act" opposes',
+        '"Weber, Randy K. Sr." "SAVE Act" position statement',
+        '"Weber, Randy K. Sr." "hr-22-119"',
+        '"Weber, Randy K. Sr." "hr-22"',
+    ]
+    assert all("voter suppression" not in query for query in queries)
+    assert all("proof of citizenship" not in query for query in queries)
+
+
 def test_representative_position_detail_appends_grounded_public_reason(monkeypatch):
     async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
         return [

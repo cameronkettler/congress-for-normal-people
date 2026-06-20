@@ -77,8 +77,8 @@ def test_representative_position_detail_appends_grounded_public_reason(monkeypat
         bioguide_id="C001130",
     )
 
-    detail = asyncio.run(
-        routes.enrich_representative_position_detail(
+    signal, detail = asyncio.run(
+        routes.enrich_representative_position_signal(
             bill={"congress_bill_id": "hr-22-119", "title": "SAVE Act"},
             representative=representative,
             signal="Voted against",
@@ -86,6 +86,91 @@ def test_representative_position_detail_appends_grounded_public_reason(monkeypat
         )
     )
 
+    assert signal == "Voted against"
     assert "Public-position context" in detail
     assert "voting barriers" in detail
     assert "https://example.com/statement" in detail
+
+
+def test_representative_position_signal_upgrades_no_direct_signal_from_public_evidence(monkeypatch):
+    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
+        return [
+            SearchResult(
+                title="News report on SAVE Act vote",
+                link="https://example.com/news",
+                snippet="Crockett criticized the SAVE Act as a voter suppression measure.",
+                source="example.com",
+            )
+        ]
+
+    class FakeReportGenerator:
+        async def generate_representative_position_reason(self, **_: object):
+            return {
+                "position": "criticizes",
+                "reason": "Public reporting says the representative criticized the bill as a voter suppression measure.",
+                "sources": [{"title": "News report on SAVE Act vote", "url": "https://example.com/news"}],
+                "confidence": "medium",
+            }
+
+    monkeypatch.setattr(routes, "search_representative_position", fake_search)
+    monkeypatch.setattr(routes, "OpenAIReportGenerator", FakeReportGenerator)
+    representative = RepresentativeRecord(
+        name="Crockett, Jasmine",
+        chamber="House",
+        party="Democratic",
+        state="TX",
+        district="30",
+        bioguide_id="C001130",
+    )
+
+    signal, detail = asyncio.run(
+        routes.enrich_representative_position_signal(
+            bill={"congress_bill_id": "hr-22-119", "title": "SAVE Act"},
+            representative=representative,
+            signal="No direct signal found",
+            detail="No sponsor or cosponsor relationship was found in the available Congress.gov data.",
+        )
+    )
+
+    assert signal == "Publicly criticized"
+    assert "voter suppression" in detail
+
+
+def test_representative_position_signal_reports_public_search_when_reason_unclear(monkeypatch):
+    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
+        return [
+            SearchResult(
+                title="SAVE Act coverage",
+                link="https://example.com/coverage",
+                snippet="Coverage mentions the representative and the bill.",
+                source="example.com",
+            )
+        ]
+
+    class FakeReportGenerator:
+        async def generate_representative_position_reason(self, **_: object):
+            return None
+
+    monkeypatch.setattr(routes, "search_representative_position", fake_search)
+    monkeypatch.setattr(routes, "OpenAIReportGenerator", FakeReportGenerator)
+    representative = RepresentativeRecord(
+        name="Crockett, Jasmine",
+        chamber="House",
+        party="Democratic",
+        state="TX",
+        district="30",
+        bioguide_id="C001130",
+    )
+
+    signal, detail = asyncio.run(
+        routes.enrich_representative_position_signal(
+            bill={"congress_bill_id": "hr-22-119", "title": "SAVE Act"},
+            representative=representative,
+            signal="No direct signal found",
+            detail="No sponsor or cosponsor relationship was found in the available Congress.gov data.",
+        )
+    )
+
+    assert signal == "Public search reviewed"
+    assert "Top result" in detail
+    assert "https://example.com/coverage" in detail

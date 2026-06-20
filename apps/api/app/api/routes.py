@@ -229,7 +229,7 @@ async def representative_context_for_bill(
         else:
             signal = "No direct signal found"
             detail = "No sponsor or cosponsor relationship was found in the available Congress.gov data."
-        detail = await enrich_representative_position_detail(
+        signal, detail = await enrich_representative_position_signal(
             bill=response.bill.model_dump(mode="json"),
             representative=representative,
             signal=signal,
@@ -267,19 +267,16 @@ async def representative_vote_signal(
     return None
 
 
-async def enrich_representative_position_detail(
+async def enrich_representative_position_signal(
     *,
     bill: dict[str, object],
     representative: RepresentativeRecord,
     signal: str,
     detail: str,
-) -> str:
-    if signal == "No direct signal found":
-        return detail
-
+) -> tuple[str, str]:
     search_results = await search_representative_position(bill, representative)
     if not search_results:
-        return detail
+        return signal, detail
 
     reason = await OpenAIReportGenerator().generate_representative_position_reason(
         bill=bill,
@@ -288,7 +285,9 @@ async def enrich_representative_position_detail(
         search_results=[search_result_payload(item) for item in search_results],
     )
     if not reason or not reason.get("reason"):
-        return detail
+        return public_search_reviewed_signal(signal), public_search_reviewed_detail(detail, search_results)
+
+    enriched_signal = public_position_signal(signal, str(reason.get("position", "")))
 
     source_links = [
         f"{source.get('title')} ({source.get('url')})"
@@ -296,7 +295,34 @@ async def enrich_representative_position_detail(
         if isinstance(source, dict) and source.get("title") and source.get("url")
     ]
     source_text = f" Sources: {'; '.join(source_links)}" if source_links else ""
-    return f"{detail} Public-position context: {reason['reason']}{source_text}"
+    return enriched_signal, f"{detail} Public-position context: {reason['reason']}{source_text}"
+
+
+def public_search_reviewed_signal(existing_signal: str) -> str:
+    if existing_signal == "No direct signal found":
+        return "Public search reviewed"
+    return existing_signal
+
+
+def public_search_reviewed_detail(detail: str, search_results: list[SearchResult]) -> str:
+    top_results = search_results[:2]
+    if not top_results:
+        return detail
+    result_text = "; ".join(f"{item.title} ({item.link})" for item in top_results)
+    return (
+        f"{detail} Public search surfaced related results, but the reviewed snippets did not "
+        f"clearly establish support or criticism. Top result{'s' if len(top_results) > 1 else ''}: {result_text}"
+    )
+
+
+def public_position_signal(existing_signal: str, position: str) -> str:
+    if existing_signal != "No direct signal found":
+        return existing_signal
+    if position == "supports":
+        return "Publicly supported"
+    if position == "criticizes":
+        return "Publicly criticized"
+    return existing_signal
 
 
 async def search_representative_position(
@@ -316,7 +342,17 @@ async def search_representative_position(
     results: list[SearchResult] = []
     seen_links: set[str] = set()
     for query in queries:
-        for item in await client.search(query):
+        query_results = await client.search(query)
+        logger.info(
+            "representative position search completed",
+            extra={
+                "provider": "SerpAPI",
+                "representative": rep_name,
+                "bill_id": bill_id,
+                "query_results": len(query_results),
+            },
+        )
+        for item in query_results:
             if item.link in seen_links:
                 continue
             seen_links.add(item.link)

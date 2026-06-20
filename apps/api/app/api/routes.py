@@ -331,6 +331,9 @@ async def enrich_representative_position_signal(
     if not search_results:
         return signal, detail, []
 
+    if reported_cosponsor := public_reported_cosponsor_signal(signal, search_results, representative):
+        return reported_cosponsor
+
     reason = await OpenAIReportGenerator().generate_representative_position_reason(
         bill=bill,
         representative=representative.model_dump(mode="json"),
@@ -552,6 +555,55 @@ async def search_representative_position(
     return ranked_position_search_results(results)[: get_settings().rep_position_search_results]
 
 
+<<<<<<< Updated upstream
+=======
+def representative_position_queries(*, rep_name: str, bill_id: str, title: str) -> list[str]:
+    bill_number = bill_id.rsplit("-", 1)[0] if bill_id else ""
+    queries = [
+        f'"{rep_name}" "{title}" supports',
+        f'"{rep_name}" "{title}" opposes',
+        f'"{rep_name}" "{title}" position statement',
+    ]
+    if bill_id:
+        queries.append(f'"{rep_name}" "{bill_id}"')
+    if bill_number and bill_number != bill_id:
+        queries.append(f'"{rep_name}" "{bill_number}"')
+        queries.append(f'"{rep_name}" "{bill_number}" cosponsor')
+    return [query for query in queries if '""' not in query]
+
+
+def public_reported_cosponsor_signal(
+    existing_signal: str,
+    search_results: list[SearchResult],
+    representative: RepresentativeRecord,
+) -> tuple[str, str, list[SourceReference]] | None:
+    if existing_signal != "No direct signal found":
+        return None
+
+    sources = [
+        source_reference(item, representative, confidence="low")
+        for item in relevant_position_sources(search_results, representative)
+        if result_mentions_cosponsorship(item)
+    ][:2]
+    if not sources:
+        return None
+
+    return (
+        "Reported cosponsor",
+        (
+            "Public search results identify your representative as a cosponsor. "
+            "This should be treated as a support signal, but verify against the official bill cosponsor list."
+        ),
+        sources,
+    )
+
+
+def result_mentions_cosponsorship(item: SearchResult) -> bool:
+    text = position_search_text(item)
+    return any(term in text for term in ("cosponsor", "cosponsored", "co-sponsor", "co-sponsored"))
+
+
+>>>>>>> Stashed changes
 def ranked_position_search_results(results: list[SearchResult]) -> list[SearchResult]:
     def score(item: SearchResult) -> int:
         text = position_search_text(item)

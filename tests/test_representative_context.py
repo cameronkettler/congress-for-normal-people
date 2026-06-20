@@ -65,6 +65,30 @@ def test_representative_cosponsor_matching_handles_weber_name_and_bioguide_varia
     assert routes.representative_is_cosponsor(representative, cosponsors)
 
 
+<<<<<<< Updated upstream
+=======
+def test_representative_position_queries_are_neutral_and_stance_oriented():
+    queries = routes.representative_position_queries(
+        rep_name="Weber, Randy K. Sr.",
+        bill_id="hr-22-119",
+        title="SAVE Act",
+    )
+
+    assert queries == [
+        '"Weber, Randy K. Sr." "SAVE Act" cosponsor',
+        '"Weber, Randy K. Sr." "SAVE Act" cosponsored',
+        '"Weber, Randy K. Sr." "SAVE Act" supports',
+        '"Weber, Randy K. Sr." "SAVE Act" opposes',
+        '"Weber, Randy K. Sr." "SAVE Act" position statement',
+        '"Weber, Randy K. Sr." "hr-22-119"',
+        '"Weber, Randy K. Sr." "hr-22"',
+        '"Weber, Randy K. Sr." "hr-22" cosponsor',
+    ]
+    assert all("voter suppression" not in query for query in queries)
+    assert all("proof of citizenship" not in query for query in queries)
+
+
+>>>>>>> Stashed changes
 def test_representative_position_detail_appends_grounded_public_reason(monkeypatch):
     async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
         return [
@@ -155,6 +179,46 @@ def test_representative_position_signal_upgrades_no_direct_signal_from_public_ev
     assert "voter suppression" in detail
     assert not detail.startswith("No sponsor or cosponsor")
     assert sources[0].url == "https://example.com/news"
+
+
+def test_public_search_can_report_cosponsor_relationship_without_llm(monkeypatch):
+    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
+        return [
+            SearchResult(
+                title="H.R. 8800 cosponsors",
+                link="https://example.com/hr-8800",
+                snippet="Rep. Jasmine Crockett is listed as a cosponsor of H.R. 8800.",
+                source="Example",
+            )
+        ]
+
+    class UnexpectedReportGenerator:
+        async def generate_representative_position_reason(self, **_: object):
+            raise AssertionError("reported cosponsor should be detected before LLM enrichment")
+
+    monkeypatch.setattr(routes, "search_representative_position", fake_search)
+    monkeypatch.setattr(routes, "OpenAIReportGenerator", UnexpectedReportGenerator)
+    representative = RepresentativeRecord(
+        name="Crockett, Jasmine",
+        chamber="House",
+        party="Democratic",
+        state="TX",
+        district="30",
+        bioguide_id="C001130",
+    )
+
+    signal, detail, sources = asyncio.run(
+        routes.enrich_representative_position_signal(
+            bill={"congress_bill_id": "hr-8800-119", "title": "National Defense Authorization Act for Fiscal Year 2027"},
+            representative=representative,
+            signal="No direct signal found",
+            detail="No sponsor or cosponsor relationship was found in the available Congress.gov data.",
+        )
+    )
+
+    assert signal == "Reported cosponsor"
+    assert "support signal" in detail
+    assert sources[0].url == "https://example.com/hr-8800"
 
 
 def test_representative_position_signal_reports_public_search_when_reason_unclear(monkeypatch):

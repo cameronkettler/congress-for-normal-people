@@ -205,7 +205,9 @@ class OpenAIReportGenerator:
                         "You identify whether public search-result snippets explain why a member of "
                         "Congress supports or criticizes a bill. Use only the provided snippets and "
                         "links. Do not use outside knowledge. If the snippets do not explain a reason, "
-                        "return position='unclear' and an empty reason."
+                        "return position='unclear' and an empty reason. If the known signal is a recorded "
+                        "vote, treat that vote as the position and use search snippets only to explain the "
+                        "member's likely stated or reported rationale."
                     ),
                 },
                 {
@@ -219,6 +221,8 @@ class OpenAIReportGenerator:
                             "search_results": search_results,
                             "requirements": [
                                 "Use cautious attribution such as 'public reporting suggests' unless the source is the representative's own site.",
+                                "Prefer snippets that explain rationale, such as voter suppression, disenfranchisement, documentation burden, election integrity, or voting access.",
+                                "Do not use generic bill-summary snippets as the reason unless no better source exists.",
                                 "Do not claim support or criticism unless the snippets clearly support it.",
                                 "Return at most three source links used.",
                             ],

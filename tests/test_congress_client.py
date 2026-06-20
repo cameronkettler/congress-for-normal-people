@@ -87,44 +87,48 @@ class _HouseVoteAsyncClient:
                         "voteQuestion": "On Passage",
                         "result": "Passed",
                         "rollCallNumber": "102",
-                        "results": [
-                            {
-                                "bioguideId": "C001130",
-                                "voteCast": "Nay",
-                                "firstName": "Jasmine",
-                                "lastName": "Crockett",
-                                "voteParty": "D",
-                                "voteState": "TX",
-                            }
-                        ],
+                            "results": {
+                                "item": [
+                                    {
+                                        "bioguideId": "C001130",
+                                        "voteCast": "Nay",
+                                        "firstName": "Jasmine",
+                                        "lastName": "Crockett",
+                                        "voteParty": "D",
+                                        "voteState": "TX",
+                                    }
+                                ]
+                            },
                     }
                 },
             )
 
         votes = []
         if url.endswith("/house-vote/119/1"):
-            votes = [
-                {
-                    "congress": "119",
-                    "sessionNumber": "1",
-                    "rollCallNumber": "102",
-                    "legislationType": "HR",
-                    "legislationNumber": "22",
-                    "voteQuestion": "On Passage",
-                    "result": "Passed",
-                    "startDate": "2025-04-10T12:00:00-04:00",
-                },
-                {
-                    "congress": "119",
-                    "sessionNumber": "1",
-                    "rollCallNumber": "103",
-                    "legislationType": "HR",
-                    "legislationNumber": "33",
-                    "voteQuestion": "On Passage",
-                    "result": "Passed",
-                    "startDate": "2025-04-10T13:00:00-04:00",
-                },
-            ]
+            votes = {
+                "item": [
+                    {
+                        "congress": "119",
+                        "sessioNumber": "1",
+                        "identifier": "11912025102",
+                        "legislationType": "HR",
+                        "legislationNumber": 22,
+                        "voteQuestion": "On Passage",
+                        "result": "Passed",
+                        "startDate": "2025-04-10T12:00:00-04:00",
+                    },
+                    {
+                        "congress": "119",
+                        "sessionNumber": "1",
+                        "rollCallNumber": "103",
+                        "legislationType": "HR",
+                        "legislationNumber": "33",
+                        "voteQuestion": "On Passage",
+                        "result": "Passed",
+                        "startDate": "2025-04-10T13:00:00-04:00",
+                    },
+                ]
+            }
 
         return httpx.Response(
             200,

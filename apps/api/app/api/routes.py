@@ -332,9 +332,14 @@ async def search_representative_position(
     bill_id = str(bill.get("congress_bill_id") or "")
     title = str(bill.get("title") or "")
     rep_name = representative.name
+    bill_number = bill_id.rsplit("-", 1)[0] if bill_id else ""
     queries = [
         f'"{rep_name}" "{bill_id}"',
+        f'"{rep_name}" "{bill_number}"',
         f'"{rep_name}" "{title}"',
+        f'"{rep_name}" "{title}" "voter suppression"',
+        f'"{rep_name}" "{title}" disenfranchise',
+        f'"{rep_name}" "{title}" "proof of citizenship"',
         f'"{rep_name}" "{title}" support oppose',
     ]
 
@@ -342,7 +347,7 @@ async def search_representative_position(
     results: list[SearchResult] = []
     seen_links: set[str] = set()
     for query in queries:
-        query_results = await client.search(query)
+        query_results = await client.search(query, num=3)
         logger.info(
             "representative position search completed",
             extra={
@@ -357,9 +362,34 @@ async def search_representative_position(
                 continue
             seen_links.add(item.link)
             results.append(item)
-            if len(results) >= get_settings().rep_position_search_results:
-                return results
-    return results
+    return ranked_position_search_results(results)[: get_settings().rep_position_search_results]
+
+
+def ranked_position_search_results(results: list[SearchResult]) -> list[SearchResult]:
+    def score(item: SearchResult) -> int:
+        text = f"{item.title} {item.snippet} {item.source} {item.link}".casefold()
+        value = 0
+        for term in (
+            "voter suppression",
+            "disenfranchise",
+            "voting rights",
+            "proof of citizenship",
+            "documentary proof",
+            "eligible voters",
+            "oppose",
+            "opposed",
+            "criticized",
+            "support",
+            "supported",
+        ):
+            if term in text:
+                value += 3
+        for low_value_domain in ("congress.gov", "instagram.com"):
+            if low_value_domain in text:
+                value -= 2
+        return value
+
+    return sorted(results, key=score, reverse=True)
 
 
 def search_result_payload(item: SearchResult) -> dict[str, str]:

@@ -26,7 +26,7 @@ class CongressClient:
 
         congress, bill_type, number = self._parse_bill_id(bill_id)
         url = f"{self.base_url}/bill/{congress}/{bill_type}/{number}"
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
             response = await client.get(url, params={"api_key": self.settings.congress_api_key})
             response.raise_for_status()
             payload = response.json().get("bill", {})
@@ -68,17 +68,20 @@ class CongressClient:
             return [self._demo_bill(f"hr-{1200 + index}-119") for index in range(1, limit + 1)]
 
         url = f"{self.base_url}/bill"
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(
-                url,
-                params={
-                    "api_key": self.settings.congress_api_key,
-                    "sort": "updateDate+desc",
-                    "limit": limit,
-                },
-            )
-            response.raise_for_status()
-            bills = response.json().get("bills", [])
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+                response = await client.get(
+                    url,
+                    params={
+                        "api_key": self.settings.congress_api_key,
+                        "sort": "updateDate+desc",
+                        "limit": limit,
+                    },
+                )
+                response.raise_for_status()
+                bills = response.json().get("bills", [])
+        except (httpx.TimeoutException, httpx.HTTPError):
+            return []
 
         records: list[BillRecord] = []
         for item in bills:

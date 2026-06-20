@@ -52,6 +52,11 @@ class MonitoringBill(BaseModel):
     alert_status: str = "queued"
 
 
+class MonitoringRecentResponse(BaseModel):
+    items: list[MonitoringBill]
+    warning: str | None = None
+
+
 class NotificationPayload(BaseModel):
     recipient: str
     subject: str

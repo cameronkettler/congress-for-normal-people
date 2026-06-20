@@ -1,3 +1,5 @@
+import logging
+
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
@@ -19,9 +21,10 @@ from packages.db.models import Bill, BillMonitoring, GeneratedReport, User, User
 from packages.ingestion.congress import CongressClient
 from packages.jobs.poll_new_bills import poll_new_bills
 from packages.shared.config import get_settings
-from packages.shared.schemas import BillLookupRequest, BillLookupResponse, MonitoringBill
+from packages.shared.schemas import BillLookupRequest, BillLookupResponse, MonitoringBill, MonitoringRecentResponse
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class AuthRequest(BaseModel):
@@ -111,33 +114,31 @@ async def lookup_bill(payload: BillLookupRequest, db: Session = Depends(get_sess
     return response
 
 
-@router.get("/monitoring/recent", response_model=list[MonitoringBill])
+@router.get("/monitoring/recent", response_model=MonitoringRecentResponse)
 async def recent_bills(db: Session = Depends(get_session)):
     rows = db.query(Bill).order_by(Bill.created_at.desc()).limit(25).all()
     if rows:
-        return [
-            MonitoringBill(
-                congress_bill_id=row.congress_bill_id,
-                title=row.title,
-                topic=row.topic,
-                summary=row.summary,
-                introduced_date=row.introduced_date,
-                alert_status="sent",
-            )
-            for row in rows
-        ]
+        return MonitoringRecentResponse(items=monitoring_bill_rows(rows))
 
-    demo = await CongressClient().list_recent_bills(limit=5)
+    warning = "No cached bills yet. Run polling to populate recent bills."
+    logger.warning("recent bills cache empty", extra={"warning": warning})
+    return MonitoringRecentResponse(
+        items=[],
+        warning=warning,
+    )
+
+
+def monitoring_bill_rows(rows: list[Bill]) -> list[MonitoringBill]:
     return [
         MonitoringBill(
-            congress_bill_id=bill.congress_bill_id,
-            title=bill.title,
-            topic=bill.topic,
-            summary=bill.summary,
-            introduced_date=bill.introduced_date,
-            alert_status="demo",
+            congress_bill_id=row.congress_bill_id,
+            title=row.title,
+            topic=row.topic,
+            summary=row.summary,
+            introduced_date=row.introduced_date,
+            alert_status="sent",
         )
-        for bill in demo
+        for row in rows
     ]
 
 

@@ -57,6 +57,11 @@ type MonitoringBill = {
   alert_status: string;
 };
 
+type MonitoringRecentResponse = {
+  items: MonitoringBill[];
+  warning?: string | null;
+};
+
 type Interest = {
   id: number;
   topic: string;
@@ -121,8 +126,26 @@ export default function Home() {
   }
 
   async function loadRecent() {
-    const response = await fetch(`${apiBase}/api/monitoring/recent`);
-    setRecent(await response.json());
+    try {
+      const response = await fetch(`${apiBase}/api/monitoring/recent`);
+      if (!response.ok) {
+        setRecent([]);
+        setStatus("Recent bills unavailable");
+        return;
+      }
+      const payload = (await response.json()) as MonitoringBill[] | MonitoringRecentResponse;
+      if (Array.isArray(payload)) {
+        setRecent(payload);
+        return;
+      }
+      setRecent(payload.items ?? []);
+      if (payload.warning) {
+        setStatus(payload.warning);
+      }
+    } catch {
+      setRecent([]);
+      setStatus("Recent bills unavailable");
+    }
   }
 
   async function loadInterests(token = authToken) {

@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Any, TypedDict
 
 import httpx
@@ -34,6 +35,7 @@ class BillLookupState(TypedDict, total=False):
     lobbying: dict[str, Any]
     generated_summary: str
     generated_analysis: str
+    analysis_sections: dict[str, str]
     stakeholders: dict[str, list[StakeholderInsight]]
     caveats: list[str]
     confidence: str
@@ -160,20 +162,8 @@ class BillLookupWorkflow:
         )
         return {
             "stakeholders": {
-                "possible_supporters": lobbying_clients[:1]
-                or [
-                    StakeholderInsight(
-                        name="Agency modernization advocates",
-                        context="Fallback stakeholder used when no related lobbying activity is found.",
-                    )
-                ],
-                "possible_opponents": lobbying_clients[1:]
-                or [
-                    StakeholderInsight(
-                        name="Civil liberties watchdogs",
-                        context="Fallback stakeholder used when no related lobbying activity is found.",
-                    )
-                ],
+                "possible_supporters": lobbying_clients[:1],
+                "possible_opponents": lobbying_clients[1:],
             },
             "caveats": [
                 "Provider data can lag official filings and should be verified before publication.",
@@ -201,6 +191,13 @@ class BillLookupWorkflow:
                     StakeholderInsight(
                         name=normalized,
                         context=self._stakeholder_context(item),
+                        takeaway=self._stakeholder_takeaway(item),
+                        issue_area=self._short_issue_area(item),
+                        registrant_name=self._as_string(item.get("registrant_name")),
+                        filing_year=self._as_int(item.get("filing_year")),
+                        filing_type=self._as_string(item.get("filing_type_display")),
+                        recency=self._filing_recency(item),
+                        relevance=self._stakeholder_relevance(item),
                     )
                 )
                 seen.add(key)
@@ -213,16 +210,52 @@ class BillLookupWorkflow:
         return None
 
     def _stakeholder_context(self, item: dict[str, Any]) -> str:
-        pieces = []
-        if item.get("issue"):
-            pieces.append(f"Issue area: {item['issue']}")
-        if item.get("registrant_name"):
-            pieces.append(f"Registrant: {item['registrant_name']}")
-        if item.get("filing_year"):
-            pieces.append(f"Filing year: {item['filing_year']}")
-        if item.get("filing_type_display"):
-            pieces.append(f"Filing type: {item['filing_type_display']}")
-        return "; ".join(pieces) or "Related lobbying disclosure found for this bill title or policy terms."
+        issue = self._short_issue_area(item)
+        if issue:
+            return f"Disclosure topic match: {issue}."
+        return "Related lobbying disclosure found for this bill title or policy terms."
+
+    def _stakeholder_takeaway(self, item: dict[str, Any]) -> str:
+        issue = self._short_issue_area(item)
+        recency = self._filing_recency(item)
+        if issue:
+            return (
+                f"This surfaced because a lobbying disclosure mentioned {issue.lower()} topics; "
+                f"{recency.lower()} makes it context, not proof of a position on this bill."
+            )
+        return "This surfaced from broad disclosure matching and should not be read as support or opposition."
+
+    def _stakeholder_relevance(self, item: dict[str, Any]) -> str:
+        if self._filing_recency(item) == "Historical filing":
+            return "Historical context only; not evidence of current support or opposition."
+        return "Topic overlap only; not evidence of support or opposition."
+
+    def _short_issue_area(self, item: dict[str, Any]) -> str | None:
+        issue = self._as_string(item.get("issue"))
+        if not issue:
+            return None
+        pieces = [piece.strip() for piece in issue.split(",") if piece.strip()]
+        return ", ".join(pieces[:3]) if pieces else None
+
+    def _filing_recency(self, item: dict[str, Any]) -> str:
+        filing_year = self._as_int(item.get("filing_year"))
+        if filing_year is None:
+            return "Unknown filing date"
+        current_year = date.today().year
+        if filing_year >= current_year - 1:
+            return "Recent filing"
+        if filing_year >= current_year - 4:
+            return "Older filing"
+        return "Historical filing"
+
+    def _as_string(self, value: Any) -> str | None:
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    def _as_int(self, value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     async def generate_report(self, state: BillLookupState) -> BillLookupState:
         fallback = self._template_report(state)
@@ -234,17 +267,57 @@ class BillLookupWorkflow:
         opponents = ", ".join(item.name for item in state["stakeholders"]["possible_opponents"])
         summary = f"{bill.congress_bill_id}: {bill.title}. {bill.summary}"
         analysis = (
-            f"{bill.sponsor} introduced the bill, which is currently {bill.status}. "
-            f"The latest action is: {bill.latest_action} Possible supporters include {supporters}. "
-            f"Possible opposition or scrutiny may come from {opponents}. Campaign finance signals "
-            "should be treated as contextual patterns rather than proof of influence."
+            f"{bill.title} is a {bill.topic} bill currently marked {bill.status}. "
+            "The political stakes should be read from the bill summary and status first; finance and "
+            "lobbying disclosures are context, not proof of influence."
         )
         return {
             "generated_summary": summary,
             "generated_analysis": analysis,
+            "analysis_sections": {
+                "What The Bill Does": bill.summary,
+                "Why Supporters Want It": self._supporter_argument(bill),
+                "Why Critics Are Concerned": self._critic_argument(bill),
+                "How It Could Affect Daily Life": self._daily_life_impact(bill),
+                "Political And Influence Read": (
+                    f"Status: {bill.status}. Latest action: {bill.latest_action} "
+                    f"Related disclosure matches: {supporters or opponents or 'none found'}. "
+                    "Treat these matches as topic context unless a filing directly names this bill."
+                ),
+            },
             "caveats": state["caveats"],
             "confidence": state["confidence"],
         }
+
+    def _supporter_argument(self, bill: BillRecord) -> str:
+        text = f"{bill.title} {bill.summary}".lower()
+        if "voter" in text or "citizenship" in text or "election" in text:
+            return (
+                "Supporters are likely to frame this as an election-integrity bill: requiring proof "
+                "of citizenship before registration is meant to reassure voters that federal voter "
+                "rolls include only eligible citizens."
+            )
+        return "Supporters would likely argue the bill addresses a concrete problem in its policy area."
+
+    def _critic_argument(self, bill: BillRecord) -> str:
+        text = f"{bill.title} {bill.summary}".lower()
+        if "voter" in text or "citizenship" in text or "election" in text:
+            return (
+                "Critics are likely to focus on access: documentary proof requirements can make "
+                "registration harder for eligible voters who lack easy access to passports, birth "
+                "certificates, or updated identity documents."
+            )
+        return "Critics may question cost, implementation burden, or uneven effects across communities."
+
+    def _daily_life_impact(self, bill: BillRecord) -> str:
+        text = f"{bill.title} {bill.summary}".lower()
+        if "voter" in text or "citizenship" in text or "election" in text:
+            return (
+                "For voters, registration could require more paperwork and better access to citizenship "
+                "documents. For election offices, it could mean new verification processes, list "
+                "maintenance work, and more legal risk."
+            )
+        return "The day-to-day impact depends on how agencies implement the bill and who must comply."
 
     def _confidence(self, state: BillLookupState) -> str:
         confidences = {

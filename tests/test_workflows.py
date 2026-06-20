@@ -81,7 +81,9 @@ def test_bill_lookup_workflow_extracts_unique_stakeholder_names():
         "American College of Physicians",
         "National Affordable Housing Management Association",
     ]
-    assert insights[1].context == "Issue area: Housing affordability"
+    assert insights[1].context == "Disclosure topic match: Housing affordability."
+    assert insights[1].takeaway
+    assert insights[1].relevance
 
 
 class _FailingFinanceClient:
@@ -117,3 +119,30 @@ def test_bill_lookup_workflow_degrades_optional_provider_failures():
     assert finance["finance"]["confidence"] == "low"
     assert lobbying["lobbying"]["source"] == "lobbying_disclosure_unavailable"
     assert lobbying["lobbying"]["registrations"] == []
+
+
+def test_bill_lookup_workflow_fallback_explains_election_bill_stakes():
+    workflow = BillLookupWorkflow(settings=Settings(openai_api_live=False))
+    bill = BillRecord(
+        congress_bill_id="hr-22-119",
+        title="SAVE Act",
+        summary="Requires documentary proof of U.S. citizenship to register for federal elections.",
+        sponsor="Rep. Roy, Chip [R-TX-21]",
+        latest_action="Received in the Senate.",
+        status="introduced",
+        topic="Elections",
+    )
+
+    report = workflow._template_report(
+        {
+            "bill": bill,
+            "stakeholders": {"possible_supporters": [], "possible_opponents": []},
+            "caveats": [],
+            "confidence": "medium",
+        }
+    )
+
+    assert "What The Bill Does" in report["analysis_sections"]
+    assert "election-integrity" in report["analysis_sections"]["Why Supporters Want It"]
+    assert "eligible voters" in report["analysis_sections"]["Why Critics Are Concerned"]
+    assert "registration could require more paperwork" in report["analysis_sections"]["How It Could Affect Daily Life"]

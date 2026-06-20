@@ -34,6 +34,13 @@ class _FakeAsyncClient:
                                 "text": (
                                     '{"generated_summary":"LLM summary",'
                                     '"generated_analysis":"LLM analysis",'
+                                    '"analysis_sections":{'
+                                    '"What The Bill Does":"Explains the bill.",'
+                                    '"Why Supporters Want It":"Supporter case.",'
+                                    '"Why Critics Are Concerned":"Critic concern.",'
+                                    '"How It Could Affect Daily Life":"Daily life impact.",'
+                                    '"Political And Influence Read":"Influence context."'
+                                    '},'
                                     '"caveats":["Verify source filings."],'
                                     '"confidence":"medium"}'
                                 ),
@@ -75,6 +82,13 @@ def test_openai_report_generator_posts_grounded_state_and_returns_structured_rep
     fallback = {
         "generated_summary": "Fallback summary",
         "generated_analysis": "Fallback analysis",
+        "analysis_sections": {
+            "What The Bill Does": "Fallback substance",
+            "Why Supporters Want It": "Fallback supporter case",
+            "Why Critics Are Concerned": "Fallback critic concern",
+            "How It Could Affect Daily Life": "Fallback impact",
+            "Political And Influence Read": "Fallback influence context",
+        },
         "caveats": state["caveats"],
         "confidence": state["confidence"],
     }
@@ -84,6 +98,13 @@ def test_openai_report_generator_posts_grounded_state_and_returns_structured_rep
     assert report == {
         "generated_summary": "LLM summary",
         "generated_analysis": "LLM analysis",
+        "analysis_sections": {
+            "What The Bill Does": "Explains the bill.",
+            "Why Supporters Want It": "Supporter case.",
+            "Why Critics Are Concerned": "Critic concern.",
+            "How It Could Affect Daily Life": "Daily life impact.",
+            "Political And Influence Read": "Influence context.",
+        },
         "caveats": ["Verify source filings."],
         "confidence": "medium",
     }

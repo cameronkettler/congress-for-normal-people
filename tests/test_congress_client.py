@@ -35,6 +35,22 @@ class _SuccessfulBillAsyncClient:
         return None
 
     async def get(self, url: str, **__: object) -> httpx.Response:
+        if url.endswith("/summaries"):
+            return httpx.Response(
+                200,
+                request=httpx.Request("GET", url),
+                json={
+                    "summaries": [
+                        {
+                            "updateDate": "2025-01-04",
+                            "text": (
+                                "<p>This bill requires documentary proof of U.S. citizenship "
+                                "to register to vote in federal elections.</p>"
+                            ),
+                        }
+                    ]
+                },
+            )
         return httpx.Response(
             200,
             request=httpx.Request("GET", url),
@@ -71,5 +87,6 @@ def test_get_bill_uses_configured_five_minute_timeout(monkeypatch):
     )
 
     assert bill.title == "SAVE Act"
+    assert "documentary proof of U.S. citizenship" in bill.summary
     assert isinstance(_SuccessfulBillAsyncClient.last_timeout, httpx.Timeout)
     assert _SuccessfulBillAsyncClient.last_timeout.connect == 300

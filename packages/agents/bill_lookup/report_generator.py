@@ -47,6 +47,7 @@ class OpenAIReportGenerator:
         return {
             "generated_summary": report.get("generated_summary") or fallback["generated_summary"],
             "generated_analysis": report.get("generated_analysis") or fallback["generated_analysis"],
+            "analysis_sections": report.get("analysis_sections") or fallback.get("analysis_sections", {}),
             "caveats": report.get("caveats") or fallback["caveats"],
             "confidence": report.get("confidence") or fallback["confidence"],
         }
@@ -59,17 +60,25 @@ class OpenAIReportGenerator:
                 {
                     "role": "system",
                     "content": (
-                        "You are Civic Pulse's policy analysis assistant. Synthesize only the "
-                        "provided structured source data. Do not invent facts, dates, sponsors, "
-                        "positions, or stakeholder intent. Use cautious language for inferred "
-                        "support or opposition."
+                        "You are Civic Pulse's political commentary analyst. Explain what a federal "
+                        "bill would do and why people may support or criticize it. Synthesize only "
+                        "the provided structured source data. Do not invent facts, dates, sponsors, "
+                        "positions, vote counts, or stakeholder intent. Use cautious language for "
+                        "inferred arguments."
                     ),
                 },
                 {
                     "role": "user",
                     "content": json.dumps(
                         {
-                            "task": "Generate a concise bill lookup report.",
+                            "task": "Generate a concise, source-grounded political commentary report.",
+                            "requirements": [
+                                "Explain what the bill would do in plain language.",
+                                "Explain the strongest likely supporter argument and critic concern based on the bill summary.",
+                                "Explain practical day-to-day impact.",
+                                "Treat lobbying disclosure matches as context, not support or opposition, unless a filing directly states a position.",
+                                "Keep each analysis section to 2-4 sentences.",
+                            ],
                             "bill": state["bill"].model_dump(mode="json"),
                             "sponsor": state.get("sponsor", {}),
                             "finance": state.get("finance", {}),
@@ -93,6 +102,7 @@ class OpenAIReportGenerator:
                         "required": [
                             "generated_summary",
                             "generated_analysis",
+                            "analysis_sections",
                             "caveats",
                             "confidence",
                         ],
@@ -104,9 +114,26 @@ class OpenAIReportGenerator:
                             "generated_analysis": {
                                 "type": "string",
                                 "description": (
-                                    "A grounded paragraph connecting bill status, sponsor, finance "
-                                    "context, and lobbying disclosures."
+                                    "A short synthesis of the bill's political stakes."
                                 ),
+                            },
+                            "analysis_sections": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": [
+                                    "What The Bill Does",
+                                    "Why Supporters Want It",
+                                    "Why Critics Are Concerned",
+                                    "How It Could Affect Daily Life",
+                                    "Political And Influence Read",
+                                ],
+                                "properties": {
+                                    "What The Bill Does": {"type": "string"},
+                                    "Why Supporters Want It": {"type": "string"},
+                                    "Why Critics Are Concerned": {"type": "string"},
+                                    "How It Could Affect Daily Life": {"type": "string"},
+                                    "Political And Influence Read": {"type": "string"},
+                                },
                             },
                             "caveats": {
                                 "type": "array",

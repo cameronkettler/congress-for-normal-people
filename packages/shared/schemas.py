@@ -29,6 +29,13 @@ class BillLookupRequest(BaseModel):
 class StakeholderInsight(BaseModel):
     name: str
     context: str = "Related lobbying disclosure found for this bill title or policy terms."
+    takeaway: str | None = None
+    issue_area: str | None = None
+    registrant_name: str | None = None
+    filing_year: int | None = None
+    filing_type: str | None = None
+    recency: str | None = None
+    relevance: str | None = None
 
 
 class BillLookupResponse(BaseModel):
@@ -38,6 +45,7 @@ class BillLookupResponse(BaseModel):
     lobbying: dict[str, Any]
     generated_summary: str
     generated_analysis: str
+    analysis_sections: dict[str, str] = Field(default_factory=dict)
     stakeholders: dict[str, list[StakeholderInsight]]
     caveats: list[str]
     confidence: str

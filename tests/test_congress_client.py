@@ -137,6 +137,38 @@ class _HouseVoteAsyncClient:
         )
 
 
+class _CosponsorAsyncClient:
+    def __init__(self, **_: object) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+    async def get(self, url: str, **kwargs: object) -> httpx.Response:
+        offset = kwargs.get("params", {}).get("offset", 0)
+        items = []
+        if offset == 0:
+            items = [{"cosponsor": {"bioguideID": f"X{index:06d}", "fullName": f"Member {index}"}} for index in range(250)]
+        elif offset == 250:
+            items = [
+                {
+                    "cosponsor": {
+                        "bioguideID": "W000814",
+                        "fullName": "Rep. Weber, Randy K. Sr. [R-TX-14]",
+                    }
+                }
+            ]
+
+        return httpx.Response(
+            200,
+            request=httpx.Request("GET", url),
+            json={"cosponsors": {"item": items}},
+        )
+
+
 def test_list_recent_bills_returns_empty_list_when_congress_times_out(monkeypatch):
     _TimeoutAsyncClient.last_timeout = None
     monkeypatch.setattr(httpx, "AsyncClient", _TimeoutAsyncClient)
@@ -196,3 +228,14 @@ def test_get_house_member_vote_returns_vote_cast(monkeypatch):
 
     assert member_vote is not None
     assert member_vote["vote_cast"] == "Nay"
+
+
+def test_list_bill_cosponsors_paginates_and_unwraps_items(monkeypatch):
+    monkeypatch.setattr(httpx, "AsyncClient", _CosponsorAsyncClient)
+
+    cosponsors = asyncio.run(
+        CongressClient(Settings(congress_api_key="test-key")).list_bill_cosponsors("hr-22-119")
+    )
+
+    assert len(cosponsors) == 251
+    assert cosponsors[-1]["bioguideID"] == "W000814"

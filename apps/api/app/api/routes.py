@@ -208,11 +208,6 @@ async def representative_context_for_bill(
     representatives, _ = await representatives_for_profile(profile)
     cosponsors = await safe_bill_cosponsors(response.bill.congress_bill_id)
     house_votes = await safe_house_votes(response.bill.congress_bill_id)
-    cosponsor_ids = {
-        item.get("bioguideId")
-        for item in cosponsors
-        if isinstance(item, dict) and item.get("bioguideId")
-    }
     sponsor_name = response.bill.sponsor.casefold()
 
     signals: list[RepresentativeBillSignal] = []
@@ -224,7 +219,7 @@ async def representative_context_for_bill(
         elif rep_name and (rep_name in sponsor_name or sponsor_name in rep_name):
             signal = "Sponsor"
             detail = "Your representative is listed as the bill sponsor, which is a formal support signal."
-        elif representative.bioguide_id and representative.bioguide_id in cosponsor_ids:
+        elif representative_is_cosponsor(representative, cosponsors):
             signal = "Cosponsor"
             detail = "Your representative is listed as a cosponsor, which is a formal support signal."
         else:
@@ -245,6 +240,56 @@ async def representative_context_for_bill(
             )
         )
     return signals
+
+
+def representative_is_cosponsor(
+    representative: RepresentativeRecord,
+    cosponsors: list[dict[str, object]],
+) -> bool:
+    for cosponsor in cosponsors:
+        if cosponsor_matches_representative(cosponsor, representative):
+            return True
+    return False
+
+
+def cosponsor_matches_representative(
+    cosponsor: dict[str, object],
+    representative: RepresentativeRecord,
+) -> bool:
+    if representative.bioguide_id and representative.bioguide_id == cosponsor_bioguide_id(cosponsor):
+        return True
+
+    cosponsor_name = normalized_person_name(cosponsor_display_name(cosponsor))
+    representative_name = normalized_person_name(representative.name)
+    if not cosponsor_name or not representative_name:
+        return False
+    return cosponsor_name == representative_name or cosponsor_name in representative_name or representative_name in cosponsor_name
+
+
+def cosponsor_bioguide_id(cosponsor: dict[str, object]) -> str:
+    for key in ("bioguideId", "bioguideID", "bioguide_id", "bioguide"):
+        value = cosponsor.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def cosponsor_display_name(cosponsor: dict[str, object]) -> str:
+    for key in ("fullName", "name", "directOrderName", "invertedOrderName"):
+        value = cosponsor.get(key)
+        if value:
+            return str(value)
+    return " ".join(
+        str(cosponsor.get(key) or "")
+        for key in ("firstName", "middleName", "lastName")
+        if cosponsor.get(key)
+    )
+
+
+def normalized_person_name(name: str) -> str:
+    normalized = name.replace(",", " ").replace(".", " ")
+    normalized = " ".join(part for part in normalized.casefold().split() if part not in {"rep", "representative"})
+    return normalized
 
 
 async def representative_vote_signal(
@@ -293,6 +338,8 @@ async def enrich_representative_position_signal(
         search_results=[search_result_payload(item) for item in search_results],
     )
     if not reason or not reason.get("reason"):
+        if signal != "No direct signal found":
+            return signal, detail, fallback_position_sources(search_results, representative)
         return (
             public_search_reviewed_signal(signal),
             public_search_reviewed_detail(detail),

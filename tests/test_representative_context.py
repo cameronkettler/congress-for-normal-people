@@ -46,6 +46,25 @@ def test_representative_vote_signal_reports_nay_vote(monkeypatch):
     assert "voted Nay" in signal[1]
 
 
+def test_representative_cosponsor_matching_handles_weber_name_and_bioguide_variants():
+    representative = RepresentativeRecord(
+        name="Weber, Randy K. Sr.",
+        chamber="House",
+        party="Republican",
+        state="TX",
+        district="14",
+        bioguide_id="W000814",
+    )
+    cosponsors = [
+        {
+            "bioguideID": "W000814",
+            "fullName": "Rep. Weber, Randy K. Sr. [R-TX-14]",
+        }
+    ]
+
+    assert routes.representative_is_cosponsor(representative, cosponsors)
+
+
 def test_representative_position_detail_appends_grounded_public_reason(monkeypatch):
     async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
         return [

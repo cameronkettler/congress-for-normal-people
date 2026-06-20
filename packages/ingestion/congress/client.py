@@ -124,10 +124,21 @@ class CongressClient:
 
         congress, bill_type, number = self._parse_bill_id(bill_id)
         url = f"{self.base_url}/bill/{congress}/{bill_type}/{number}/cosponsors"
+        cosponsors: list[dict[str, Any]] = []
         async with httpx.AsyncClient(timeout=httpx.Timeout(self.settings.congress_api_timeout_seconds)) as client:
-            response = await client.get(url, params=self._request_params())
-            response.raise_for_status()
-            return response.json().get("cosponsors", [])
+            offset = 0
+            while offset < 1000:
+                response = await client.get(
+                    url,
+                    params={**self._request_params(), "limit": 250, "offset": offset},
+                )
+                response.raise_for_status()
+                page = self._cosponsor_items(response.json())
+                cosponsors.extend(page)
+                if len(page) < 250:
+                    break
+                offset += 250
+        return cosponsors
 
     async def list_house_votes_for_bill(self, bill_id: str) -> list[dict[str, Any]]:
         if not self.settings.congress_api_key:
@@ -318,6 +329,14 @@ class CongressClient:
         if not isinstance(raw_items, list):
             return []
         return [self._unwrap_item(item, "houseRollCallVote") for item in raw_items]
+
+    def _cosponsor_items(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_items = payload.get("cosponsors", [])
+        if isinstance(raw_items, dict):
+            raw_items = raw_items.get("item", [])
+        if not isinstance(raw_items, list):
+            return []
+        return [self._unwrap_item(item, "cosponsor") for item in raw_items]
 
     def _house_member_vote_items(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         raw_items = payload.get("results", [])

@@ -1,5 +1,7 @@
 from typing import Any, TypedDict
 
+import httpx
+
 from packages.ingestion.congress import CongressClient
 from packages.ingestion.fec import FECClient
 from packages.ingestion.lobbying import LobbyingDisclosureClient
@@ -14,6 +16,13 @@ try:
 except ImportError:  # pragma: no cover - exercised only when optional dependency is absent
     END = "__end__"
     StateGraph = None
+
+
+class ProviderLookupError(Exception):
+    def __init__(self, provider: str, detail: str = "External data source unavailable or timed out") -> None:
+        super().__init__(detail)
+        self.provider = provider
+        self.detail = detail
 
 
 class BillLookupState(TypedDict, total=False):
@@ -97,16 +106,53 @@ class BillLookupWorkflow:
         return {"resolved_input": resolution, "bill_id": resolution.bill_id}
 
     async def retrieve_bill(self, state: BillLookupState) -> BillLookupState:
-        return {"bill": await self.congress.get_bill(state["bill_id"])}
+        try:
+            return {"bill": await self.congress.get_bill(state["bill_id"])}
+        except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.HTTPError, Exception) as exc:
+            raise ProviderLookupError("Congress.gov") from exc
 
     async def retrieve_sponsor(self, state: BillLookupState) -> BillLookupState:
-        return {"sponsor": await self.congress.get_sponsor(state["bill"].sponsor)}
+        try:
+            return {"sponsor": await self.congress.get_sponsor(state["bill"].sponsor)}
+        except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.HTTPError, Exception):
+            return {
+                "sponsor": {
+                    "name": state["bill"].sponsor,
+                    "party": "Unknown",
+                    "state": "Unknown",
+                    "committees": ["Sponsor detail unavailable from Congress.gov."],
+                    "confidence": "low",
+                }
+            }
 
     async def retrieve_finance(self, state: BillLookupState) -> BillLookupState:
-        return {"finance": await self.fec.get_candidate_finance_patterns(state["bill"].sponsor)}
+        try:
+            return {"finance": await self.fec.get_candidate_finance_patterns(state["bill"].sponsor)}
+        except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.HTTPError, Exception):
+            return {
+                "finance": {
+                    "source": "openfec_unavailable",
+                    "sponsor": state["bill"].sponsor,
+                    "candidate_matches": [],
+                    "patterns": [],
+                    "confidence": "low",
+                    "warning": "Campaign finance data unavailable or timed out.",
+                }
+            }
 
     async def retrieve_lobbying(self, state: BillLookupState) -> BillLookupState:
-        return {"lobbying": await self.lobbying.search_activity(state["bill"].title)}
+        try:
+            return {"lobbying": await self.lobbying.search_activity(state["bill"].title)}
+        except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.HTTPError, Exception):
+            return {
+                "lobbying": {
+                    "source": "lobbying_disclosure_unavailable",
+                    "query": state["bill"].title,
+                    "registrations": [],
+                    "confidence": "low",
+                    "warning": "Lobbying disclosure data unavailable or timed out.",
+                }
+            }
 
     async def aggregate_findings(self, state: BillLookupState) -> BillLookupState:
         lobbying_clients = self._stakeholder_insights(

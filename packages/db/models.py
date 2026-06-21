@@ -61,6 +61,20 @@ class BillPositionSearchCache(Base):
         nullable=False,
     )
 
+
+class ReportCache(Base):
+    __tablename__ = "report_cache"
+    __table_args__ = (
+        UniqueConstraint("congress_bill_id", "profile_key", name="uq_report_cache_bill_profile"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    congress_bill_id = Column(String(64), nullable=False, index=True)
+    profile_key = Column(String(160), nullable=False, index=True)
+    response_json = Column(JSON, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
 class User(Base):
     __tablename__ = "users"
 

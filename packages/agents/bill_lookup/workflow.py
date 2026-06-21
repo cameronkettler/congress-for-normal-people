@@ -1,4 +1,5 @@
 from datetime import date
+from collections.abc import AsyncIterator, Callable
 from typing import Any, TypedDict
 
 import httpx
@@ -67,6 +68,19 @@ class BillLookupWorkflow:
             state = await self.graph.ainvoke(initial)
         return BillLookupResponse(**state)
 
+    async def run_with_progress(self, bill_id: str) -> AsyncIterator[dict[str, Any]]:
+        state: BillLookupState = {"bill_id": bill_id}
+        for step_name, message, detail, step in self._progress_steps():
+            yield {
+                "type": "progress",
+                "step": step_name,
+                "message": message,
+                "detail": detail,
+            }
+            state.update(await step(state))
+
+        yield {"type": "result", "data": BillLookupResponse(**state)}
+
     def _build_graph(self):
         if StateGraph is None:
             return None
@@ -102,6 +116,54 @@ class BillLookupWorkflow:
         ):
             state.update(await step(state))
         return state
+
+    def _progress_steps(
+        self,
+    ) -> list[tuple[str, str, str, Callable[[BillLookupState], Any]]]:
+        return [
+            (
+                "resolve_input",
+                "Resolving the bill request",
+                "Natural-language searches are mapped to a congressional bill number when needed.",
+                self.resolve_input,
+            ),
+            (
+                "retrieve_bill",
+                "Pulling the official bill record",
+                "Congress.gov can be slow; this call may wait up to the configured Congress.gov timeout.",
+                self.retrieve_bill,
+            ),
+            (
+                "retrieve_sponsor",
+                "Reading sponsor context",
+                "Collecting sponsor metadata and official member identifiers when available.",
+                self.retrieve_sponsor,
+            ),
+            (
+                "retrieve_finance",
+                "Checking campaign-finance coverage",
+                "Looking for sponsor-related campaign-finance records.",
+                self.retrieve_finance,
+            ),
+            (
+                "retrieve_lobbying",
+                "Checking lobbying disclosures",
+                "Looking for related lobbying disclosure activity by bill title and policy terms.",
+                self.retrieve_lobbying,
+            ),
+            (
+                "aggregate_findings",
+                "Organizing source signals",
+                "Separating official records, finance coverage, and lobbying context.",
+                self.aggregate_findings,
+            ),
+            (
+                "generate_report",
+                "Running AI commentary and web research",
+                f"This deeper research pass may take up to {int(self.settings.openai_api_timeout_seconds)} seconds.",
+                self.generate_report,
+            ),
+        ]
 
     async def resolve_input(self, state: BillLookupState) -> BillLookupState:
         resolution = await self.input_resolver.resolve(state["bill_id"])

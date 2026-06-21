@@ -112,8 +112,56 @@ def test_representative_name_matching_handles_first_last_and_suffixes():
     assert not routes.names_refer_to_same_person("Cruz, Ted", "John Cornyn")
 
 
+def test_typed_representative_lookup_can_resolve_current_state_member(monkeypatch):
+    class FakeQuery:
+        def filter(self, *_: object):
+            return self
+
+        def one_or_none(self):
+            return type(
+                "Profile",
+                (),
+                {"user_id": 1, "state": "TX", "congressional_district": "30"},
+            )()
+
+    class FakeDb:
+        def query(self, *_: object):
+            return FakeQuery()
+
+    async def fake_representatives_for_profile(profile):
+        return ([], None)
+
+    async def fake_current_state_members(state: str):
+        return [
+            RepresentativeRecord(
+                name="Weber, Randy K. Sr.",
+                chamber="House",
+                party="Republican",
+                state=state,
+                district="14",
+                bioguide_id="W000814",
+                photo_url="https://www.congress.gov/img/member/w000814_200.jpg",
+            )
+        ]
+
+    monkeypatch.setattr(routes, "representatives_for_profile", fake_representatives_for_profile)
+    monkeypatch.setattr(routes, "current_state_members", fake_current_state_members)
+
+    representative = asyncio.run(
+        routes.representative_from_user_or_name(
+            FakeDb(),
+            type("User", (), {"id": 1})(),
+            "Randy Weber",
+        )
+    )
+
+    assert representative.party == "Republican"
+    assert representative.chamber == "House"
+    assert representative.photo_url == "https://www.congress.gov/img/member/w000814_200.jpg"
+
+
 def test_representative_signal_for_bill_can_evaluate_typed_senator_name(monkeypatch):
-    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
+    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord, session=None):
         return []
 
     class FakeReportGenerator:
@@ -161,17 +209,15 @@ def test_representative_position_queries_are_neutral_and_stance_oriented():
     )
 
     assert queries == [
-        'site:weber.house.gov "SAVE Act"',
-        '"Weber, Randy K. Sr." "SAVE Act" statement',
-        '"Weber, Randy K. Sr." "SAVE Act" local news',
-        '"Weber, Randy K. Sr." "hr-22-119" statement',
-        '"Weber, Randy K. Sr." "hr-22" statement',
+        (
+            '"Weber, Randy K. Sr." ("SAVE Act" "hr-22-119" "hr-22") '
+            "(site:weber.house.gov OR site:house.gov OR site:senate.gov OR site:congress.gov) "
+            "(statement OR press release OR voted OR vote OR support OR oppose OR cosponsor)"
+        ),
     ]
+    assert len(queries) == 1
     assert all(" quote" not in query for query in queries)
-    assert all(" press release" not in query for query in queries)
     assert all(" interview" not in query for query in queries)
-    assert all(" supports" not in query for query in queries)
-    assert all(" opposes" not in query for query in queries)
     assert all("voter suppression" not in query for query in queries)
     assert all("proof of citizenship" not in query for query in queries)
 
@@ -183,12 +229,16 @@ def test_representative_position_queries_work_without_official_url():
         title="National Defense Authorization Act for Fiscal Year 2027",
     )
 
-    assert queries[0] == '"Crockett, Jasmine" "National Defense Authorization Act for Fiscal Year 2027" statement'
-    assert all(not query.startswith("site:") for query in queries)
+    assert queries[0] == (
+        '"Crockett, Jasmine" ("National Defense Authorization Act for Fiscal Year 2027" "hr-8800-119" "hr-8800") '
+        "(site:house.gov OR site:senate.gov OR site:congress.gov) "
+        "(statement OR press release OR voted OR vote OR support OR oppose OR cosponsor)"
+    )
+    assert len(queries) == 1
 
 
 def test_representative_position_detail_appends_grounded_public_reason(monkeypatch):
-    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
+    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord, session=None):
         return [
             SearchResult(
                 title="Member statement",
@@ -235,7 +285,7 @@ def test_representative_position_detail_appends_grounded_public_reason(monkeypat
 
 
 def test_representative_position_signal_upgrades_no_direct_signal_from_public_evidence(monkeypatch):
-    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
+    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord, session=None):
         return [
             SearchResult(
                 title="News report on SAVE Act vote",
@@ -282,7 +332,7 @@ def test_representative_position_signal_upgrades_no_direct_signal_from_public_ev
 
 
 def test_public_search_can_report_cosponsor_relationship_without_llm(monkeypatch):
-    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
+    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord, session=None):
         return [
             SearchResult(
                 title="H.R. 8800 cosponsors",
@@ -323,7 +373,7 @@ def test_public_search_can_report_cosponsor_relationship_without_llm(monkeypatch
 
 
 def test_representative_position_signal_reports_public_search_when_reason_unclear(monkeypatch):
-    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
+    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord, session=None):
         return [
             SearchResult(
                 title="SAVE Act coverage",
@@ -363,8 +413,106 @@ def test_representative_position_signal_reports_public_search_when_reason_unclea
     assert sources[0].url == "https://example.com/coverage"
 
 
+def test_representative_position_signal_keeps_unclear_ai_context(monkeypatch):
+    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord, session=None):
+        return [
+            SearchResult(
+                title="Bill tracking in US - S 1582",
+                link="https://example.com/s-1582",
+                snippet="Bill tracking page for S. 1582 and public legislative status.",
+                source="Example",
+            )
+        ]
+
+    class FakeReportGenerator:
+        async def generate_representative_position_reason(self, **_: object):
+            return {
+                "position": "unclear",
+                "reason": "Public sources identify the bill and representative, but they do not establish whether the senator supports or opposes the measure.",
+                "sources": [{"title": "Bill tracking in US - S 1582", "url": "https://example.com/s-1582"}],
+                "confidence": "low",
+            }
+
+    monkeypatch.setattr(routes, "search_representative_position", fake_search)
+    monkeypatch.setattr(routes, "OpenAIReportGenerator", FakeReportGenerator)
+    representative = RepresentativeRecord(
+        name="Cruz, Ted",
+        chamber="Senate",
+        party="Republican",
+        state="TX",
+        bioguide_id="C001098",
+    )
+
+    signal, detail, sources, ai_context = asyncio.run(
+        routes.enrich_representative_position_signal(
+            bill={"congress_bill_id": "s-1582-119", "title": "GENIUS Act"},
+            representative=representative,
+            signal="No direct signal found",
+            detail="No sponsor or cosponsor relationship was found in the available Congress.gov data.",
+        )
+    )
+
+    assert signal == "Public search reviewed"
+    assert "formal sponsor, cosponsor, or recorded-vote signal" in detail
+    assert ai_context is not None
+    assert "do not establish" in ai_context
+    assert sources[0].url == "https://example.com/s-1582"
+
+
+def test_representative_position_signal_combines_openai_web_search_context(monkeypatch):
+    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord, session=None):
+        return []
+
+    class FakeReportGenerator:
+        async def generate_representative_web_context(self, **_: object):
+            return {
+                "position": "supports",
+                "reason": "OpenAI web search found a public source saying the senator backed the bill's stablecoin framework.",
+                "sources": [{"title": "Senator statement", "url": "https://www.senate.gov/member-statement"}],
+                "confidence": "medium",
+            }
+
+        async def generate_representative_position_reason(self, **kwargs: object):
+            search_results = kwargs["search_results"]
+            assert any(
+                item["source"] == "OpenAI web search"
+                for item in search_results
+            )
+            return {
+                "position": "supports",
+                "reason": "Public context says the senator backed the bill's stablecoin framework.",
+                "sources": [{"title": "Senator statement", "url": "https://www.senate.gov/member-statement"}],
+                "confidence": "medium",
+            }
+
+    monkeypatch.setattr(routes, "search_representative_position", fake_search)
+    monkeypatch.setattr(routes, "OpenAIReportGenerator", FakeReportGenerator)
+    representative = RepresentativeRecord(
+        name="Cruz, Ted",
+        chamber="Senate",
+        party="Republican",
+        state="TX",
+        bioguide_id="C001098",
+    )
+
+    signal, detail, sources, ai_context = asyncio.run(
+        routes.enrich_representative_position_signal(
+            bill={"congress_bill_id": "s-1582-119", "title": "GENIUS Act"},
+            representative=representative,
+            signal="No direct signal found",
+            detail="No sponsor or cosponsor relationship was found in the available Congress.gov data.",
+        )
+    )
+
+    assert signal == "Publicly supported"
+    assert "formal sponsor, cosponsor, or recorded-vote signal" in detail
+    assert ai_context is not None
+    assert "stablecoin framework" in ai_context
+    assert sources[0].url == "https://www.senate.gov/member-statement"
+
+
 def test_representative_position_agent_can_use_formal_signal_without_search(monkeypatch):
-    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord):
+    async def fake_search(bill: dict[str, object], representative: RepresentativeRecord, session=None):
         return []
 
     class FakeReportGenerator:

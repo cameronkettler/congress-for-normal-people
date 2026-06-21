@@ -18,6 +18,7 @@ type RepresentativeRecord = {
   state: string;
   district?: string | null;
   official_url?: string | null;
+  photo_url?: string | null;
 };
 
 type UserProfile = {
@@ -286,17 +287,20 @@ export default function ProfilePage() {
                   className="p-4"
                 >
                   <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-sm font-semibold">
-                        {representative.name}
-                      </h3>
+                    <div className="flex min-w-0 items-start gap-2">
+                      <MemberAvatar name={representative.name} photoUrl={representative.photo_url} />
+                      <div className="min-w-0">
+                        <h3 className="text-sm font-semibold">
+                          {representative.name}
+                        </h3>
 
-                      <p className="mt-1 text-sm text-slate-600">
-                        {representative.chamber}
-                        {representative.district
-                          ? `, District ${representative.district}`
-                          : ""}
-                      </p>
+                        <p className="mt-1 text-sm text-slate-600">
+                          {representative.chamber}
+                          {representative.district
+                            ? `, District ${representative.district}`
+                            : ""}
+                        </p>
+                      </div>
                     </div>
 
                     <span
@@ -349,6 +353,34 @@ function authHeaders(token: string) {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json"
   };
+}
+
+function MemberAvatar({ name, photoUrl }: { name: string; photoUrl?: string | null }) {
+  const initials = name
+    .split(/[,\s]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
+
+  if (photoUrl) {
+    return (
+      <img
+        src={photoUrl}
+        alt=""
+        className="h-12 w-12 shrink-0 rounded-full border border-line object-cover object-top"
+        onError={(event) => {
+          event.currentTarget.style.display = "none";
+        }}
+      />
+    );
+  }
+
+  return (
+    <span className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-line bg-white text-xs font-semibold text-slate-500">
+      {initials || <UserRound size={16} aria-hidden="true" />}
+    </span>
+  );
 }
 
 function partyColor(party: string) {

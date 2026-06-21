@@ -51,7 +51,9 @@ class CongressClient:
 
         title = payload.get("title") or payload.get("shortTitle") or f"{bill_type.upper()} {number}"
         latest_action = (payload.get("latestAction") or {}).get("text", "No latest action available")
-        sponsor = (payload.get("sponsors") or [{}])[0].get("fullName", "Unknown sponsor")
+        sponsor_payload = (payload.get("sponsors") or [{}])[0]
+        sponsor = sponsor_payload.get("fullName", "Unknown sponsor")
+        sponsor_bioguide_id = sponsor_payload.get("bioguideId")
         introduced = payload.get("introducedDate")
         introduced_date = date.fromisoformat(introduced) if introduced else None
 
@@ -60,6 +62,8 @@ class CongressClient:
             title=title,
             summary=summary,
             sponsor=sponsor,
+            sponsor_bioguide_id=sponsor_bioguide_id,
+            sponsor_photo_url=self._member_photo_url(sponsor_bioguide_id),
             introduced_date=introduced_date,
             latest_action=latest_action,
             status=payload.get("status", "introduced"),
@@ -392,7 +396,13 @@ class CongressClient:
             district=str(member.get("district") or latest_term.get("district") or "") or None,
             bioguide_id=member.get("bioguideId"),
             official_url=member.get("officialUrl"),
+            photo_url=self._member_photo_url(member.get("bioguideId")),
         )
+
+    def _member_photo_url(self, bioguide_id: Any) -> str | None:
+        if not isinstance(bioguide_id, str) or not bioguide_id.strip():
+            return None
+        return f"https://www.congress.gov/img/member/{bioguide_id.strip().lower()}_200.jpg"
 
     def _member_chamber(self, member: dict[str, Any]) -> str:
         terms = member.get("terms", {}).get("item", []) if isinstance(member.get("terms"), dict) else []

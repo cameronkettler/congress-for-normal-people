@@ -16,6 +16,8 @@ class BillRecord(BaseModel):
     title: str
     summary: str
     sponsor: str
+    sponsor_bioguide_id: str | None = None
+    sponsor_photo_url: str | None = None
     introduced_date: date | None = None
     latest_action: str
     status: str
@@ -35,6 +37,7 @@ class RepresentativeRecord(BaseModel):
     district: str | None = None
     bioguide_id: str | None = None
     official_url: str | None = None
+    photo_url: str | None = None
 
 
 class RepresentativeBillSignal(BaseModel):

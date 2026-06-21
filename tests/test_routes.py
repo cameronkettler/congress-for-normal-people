@@ -1,9 +1,13 @@
 import asyncio
 import json
+from datetime import datetime, timezone
 
 from apps.api.app.api import routes
 from packages.agents.bill_lookup import ProviderLookupError
+from packages.db.models import Base, ReportCache
 from packages.shared.schemas import BillLookupRequest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 
 class _EmptyQuery:
@@ -61,3 +65,59 @@ def test_lookup_bill_returns_structured_502_for_congress_failure(monkeypatch):
         "provider": "Congress.gov",
         "detail": "External data source unavailable or timed out",
     }
+
+
+def test_cached_report_response_returns_fresh_full_report_without_workflow():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    db.add(
+        ReportCache(
+            congress_bill_id="hr-22-119",
+            profile_key="anonymous",
+            response_json={
+                "bill": {
+                    "congress_bill_id": "hr-22-119",
+                    "title": "SAVE Act",
+                    "summary": "Cached summary",
+                    "sponsor": "Rep. Roy, Chip [R-TX-21]",
+                    "latest_action": "Cached action",
+                    "status": "introduced",
+                    "topic": "Elections",
+                },
+                "sponsor": {},
+                "finance": {"confidence": "low"},
+                "lobbying": {},
+                "generated_summary": "Cached generated summary",
+                "generated_analysis": "Cached generated analysis",
+                "analysis_sections": {},
+                "stakeholders": {"possible_supporters": [], "possible_opponents": []},
+                "caveats": ["Cached caveat"],
+                "confidence": "medium",
+                "representative_context": [
+                    {
+                        "representative": {
+                            "name": "Crockett, Jasmine",
+                            "chamber": "House",
+                            "party": "Democrat",
+                            "state": "TX",
+                            "district": "30",
+                        },
+                        "signal": "Voted against",
+                        "detail": "Cached representative context",
+                        "sources": [],
+                    }
+                ],
+            },
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    db.commit()
+
+    response = routes.cached_report_response(db, "hr-22", None)
+
+    assert response is not None
+    assert response.bill.congress_bill_id == "hr-22-119"
+    assert response.generated_summary == "Cached generated summary"
+    assert response.representative_context[0].detail == "Cached representative context"

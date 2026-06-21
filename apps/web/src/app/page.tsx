@@ -89,6 +89,18 @@ type StakeholderInsight = {
   relevance?: string;
 };
 
+type HotTopicBill = {
+  congress_bill_id: string;
+  title: string;
+  topic: string;
+  reason: string;
+  year: number;
+};
+
+type HotTopicsResponse = {
+  items: HotTopicBill[];
+};
+
 type MonitoringBill = {
   congress_bill_id: string;
   title: string;
@@ -100,18 +112,6 @@ type MonitoringBill = {
 type MonitoringRecentResponse = {
   items: MonitoringBill[];
   warning?: string | null;
-};
-
-type HotTopicBill = {
-  congress_bill_id: string;
-  title: string;
-  topic: string;
-  reason: string;
-  year: number;
-};
-
-type HotTopicsResponse = {
-  items: HotTopicBill[];
 };
 
 type Interest = {
@@ -152,6 +152,14 @@ type RegistrationPayload = {
   zip_code?: string;
 };
 
+type PreviousLookup = {
+  congress_bill_id: string;
+  title: string;
+  topic: string;
+  summary: string;
+  cachedAt: number;
+};
+
 type LookupProgress = {
   step?: string;
   message: string;
@@ -166,6 +174,7 @@ type LookupStreamEvent =
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 const tokenStorageKey = "civic-pulse-token";
 const lastLookupStorageKey = "civic-pulse-last-lookup";
+const previousLookupsStorageKey = "civic-pulse-previous-lookups";
 
 export default function Home() {
   const [billId, setBillId] = useState("");
@@ -173,7 +182,7 @@ export default function Home() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [lookup, setLookup] = useState<LookupResponse | null>(null);
-  const [recent, setRecent] = useState<MonitoringBill[]>([]);
+  const [watchlistBills, setWatchlistBills] = useState<MonitoringBill[]>([]);
   const [hotTopics, setHotTopics] = useState<HotTopicBill[]>([]);
   const [interests, setInterests] = useState<Interest[]>([]);
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -184,17 +193,30 @@ export default function Home() {
   const [newTopic, setNewTopic] = useState("");
   const [status, setStatus] = useState("Ready");
   const [lookupProgress, setLookupProgress] = useState<LookupProgress[]>([]);
+  const [previousLookups, setPreviousLookups] = useState<PreviousLookup[]>([]);
 
   useEffect(() => {
     void bootstrap();
   }, []);
 
   const enabledCount = useMemo(() => interests.filter((item) => item.enabled).length, [interests]);
+  const enabledTopics = useMemo(
+    () => new Set(interests.filter((item) => item.enabled).map((item) => item.topic.toLowerCase())),
+    [interests]
+  );
+  const visibleWatchlistBills = useMemo(
+    () =>
+      watchlistBills
+        .filter((bill) => enabledTopics.size === 0 || enabledTopics.has(bill.topic.toLowerCase()))
+        .slice(0, 5),
+    [watchlistBills, enabledTopics]
+  );
 
   async function bootstrap() {
-    await loadRecent();
+    await loadWatchlistBills();
     await loadHotTopics();
     restoreCachedLookup();
+    restorePreviousLookups();
     const storedToken = window.localStorage.getItem(tokenStorageKey);
     if (!storedToken) {
       setAuthChecked(true);
@@ -216,29 +238,6 @@ export default function Home() {
       await Promise.all([loadInterests(storedToken), loadProfile(storedToken)]);
     } finally {
       setAuthChecked(true);
-    }
-  }
-
-  async function loadRecent() {
-    try {
-      const response = await fetch(`${apiBase}/api/monitoring/recent`);
-      if (!response.ok) {
-        setRecent([]);
-        setStatus("Recent bills unavailable");
-        return;
-      }
-      const payload = (await response.json()) as MonitoringBill[] | MonitoringRecentResponse;
-      if (Array.isArray(payload)) {
-        setRecent(payload);
-        return;
-      }
-      setRecent(payload.items ?? []);
-      if (payload.warning) {
-        setStatus(payload.warning);
-      }
-    } catch {
-      setRecent([]);
-      setStatus("Recent bills unavailable");
     }
   }
 
@@ -357,6 +356,20 @@ export default function Home() {
     await Promise.all([loadInterests(auth.token), loadProfile(auth.token)]);
   }
 
+  async function loadWatchlistBills() {
+    try {
+      const response = await fetch(`${apiBase}/api/monitoring/recent`);
+      if (!response.ok) {
+        setWatchlistBills([]);
+        return;
+      }
+      const payload = (await response.json()) as MonitoringBill[] | MonitoringRecentResponse;
+      setWatchlistBills(Array.isArray(payload) ? payload : payload.items ?? []);
+    } catch {
+      setWatchlistBills([]);
+    }
+  }
+
   async function loadHotTopics() {
     try {
       const response = await fetch(`${apiBase}/api/monitoring/hot-topics`);
@@ -410,7 +423,8 @@ export default function Home() {
       setRepresentativeCheck(null);
       cacheLookup(nextBillId, payload);
       setStatus("Report generated");
-      await loadRecent();
+      await loadWatchlistBills();
+      await loadHotTopics();
     } catch (error) {
       setLookup(null);
       if (!(error instanceof Error) || error.message !== "LOOKUP_STREAM_ERROR") {
@@ -481,11 +495,41 @@ export default function Home() {
     }
   }
 
-function cacheLookup(nextBillId: string, payload: LookupResponse) {
+  function cacheLookup(nextBillId: string, payload: LookupResponse) {
     window.localStorage.setItem(
       lastLookupStorageKey,
       JSON.stringify({ billId: nextBillId, lookup: payload, cachedAt: Date.now() })
     );
+    rememberPreviousLookup(payload);
+  }
+
+  function restorePreviousLookups() {
+    const cached = window.localStorage.getItem(previousLookupsStorageKey);
+    if (!cached) return;
+    try {
+      const payload = JSON.parse(cached) as PreviousLookup[];
+      setPreviousLookups(Array.isArray(payload) ? payload.slice(0, 6) : []);
+    } catch {
+      window.localStorage.removeItem(previousLookupsStorageKey);
+    }
+  }
+
+  function rememberPreviousLookup(payload: LookupResponse) {
+    const item: PreviousLookup = {
+      congress_bill_id: payload.bill.congress_bill_id,
+      title: payload.bill.title,
+      topic: payload.bill.topic,
+      summary: payload.generated_summary,
+      cachedAt: Date.now()
+    };
+    setPreviousLookups((current) => {
+      const next = [
+        item,
+        ...current.filter((existing) => existing.congress_bill_id !== item.congress_bill_id)
+      ].slice(0, 6);
+      window.localStorage.setItem(previousLookupsStorageKey, JSON.stringify(next));
+      return next;
+    });
   }
 
   function namesReferToSamePerson(left: string, right: string) {
@@ -573,9 +617,10 @@ function cacheLookup(nextBillId: string, payload: LookupResponse) {
       });
       const payload = await response.json();
       setStatus(
-        `Poll complete: ${payload.discovered} discovered, ${payload.notifications} notifications queued`
+        `Watchlist refreshed: ${payload.discovered} new bills found`
       );
-      await loadRecent();
+      await loadWatchlistBills();
+      await loadHotTopics();
     } finally {
       setPolling(false);
     }
@@ -725,7 +770,7 @@ function cacheLookup(nextBillId: string, payload: LookupResponse) {
           </div>
         </div>
 
-        <aside className="grid gap-5">
+        <aside className="grid content-start gap-5">
           <RepresentativeLookupCard
             profile={profile}
             lookup={lookup}
@@ -736,89 +781,20 @@ function cacheLookup(nextBillId: string, payload: LookupResponse) {
 
           <HotTopicsCard items={hotTopics} onSelect={runLookup} />
 
-          <div className="rounded border border-line bg-white">
-            <div className="flex items-center justify-between border-b border-line px-4 py-3">
-              <div className="flex items-center gap-2">
-                <Bell size={18} aria-hidden="true" />
-                <h2 className="text-base font-semibold">Monitoring</h2>
-              </div>
-              <button
-                onClick={pollBills}
-                className="focus-ring inline-flex items-center gap-2 rounded border border-line px-3 py-1.5 text-sm font-medium"
-                disabled={polling}
-              >
-                {polling ? <Loader2 className="animate-spin" size={16} /> : <Radar size={16} />}
-                Poll
-              </button>
-            </div>
-            <div className="grid grid-cols-3 border-b border-line text-center text-sm">
-              <Metric label="Recent" value={String(recent.length)} compact />
-              <Metric label="Topics" value={String(enabledCount)} compact />
-              <Metric label="Alerts" value="Queued" compact />
-            </div>
-            <div className="p-4">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <h3 className="text-sm font-semibold uppercase text-slate-500">Alert Topics</h3>
-                <span className="text-xs text-slate-500">Used by Poll</span>
-              </div>
-              <form onSubmit={addInterest} className="mb-3 flex gap-2">
-                <input
-                  className="focus-ring min-w-0 flex-1 rounded border border-line px-3 py-2 text-sm"
-                  value={newTopic}
-                  onChange={(event) => setNewTopic(event.target.value)}
-                  placeholder="Add topic"
-                  aria-label="Add alert topic"
-                />
-                <button
-                  className="focus-ring inline-flex items-center justify-center rounded border border-line px-3 text-sm font-medium"
-                  aria-label="Add topic"
-                >
-                  <Plus size={16} aria-hidden="true" />
-                </button>
-              </form>
-              <div className="flex flex-wrap gap-2">
-                {interests.map((interest) => (
-                  <button
-                    key={interest.topic}
-                    onClick={() => void toggleInterest(interest)}
-                    className={`focus-ring rounded border px-2 py-1 text-xs font-medium ${
-                      interest.enabled
-                        ? "border-signal bg-emerald-50 text-signal"
-                        : "border-line bg-panel text-slate-500"
-                    }`}
-                  >
-                    {interest.topic}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
+          <WatchlistCard
+            interests={interests}
+            enabledCount={enabledCount}
+            bills={visibleWatchlistBills}
+            newTopic={newTopic}
+            polling={polling}
+            onNewTopicChange={setNewTopic}
+            onAddInterest={addInterest}
+            onToggleInterest={toggleInterest}
+            onRefresh={pollBills}
+            onSelectBill={runLookup}
+          />
 
-          <div className="rounded border border-line bg-white">
-            <div className="flex items-center gap-2 border-b border-line px-4 py-3">
-              <CheckCircle2 size={18} aria-hidden="true" />
-              <h2 className="text-base font-semibold">Recent Bills</h2>
-            </div>
-            <div className="divide-y divide-line">
-              {recent.slice(0, 7).map((bill) => (
-                <button
-                  key={bill.congress_bill_id}
-                  type="button"
-                  onClick={() => void runLookup(bill.congress_bill_id)}
-                  className="focus-ring block w-full p-4 text-left transition hover:bg-panel"
-                >
-                  <div className="mb-1 flex items-center justify-between gap-3">
-                    <span className="text-xs font-semibold uppercase text-civic">
-                      {bill.congress_bill_id}
-                    </span>
-                    <span className="rounded bg-slate-100 px-2 py-0.5 text-xs">{bill.topic}</span>
-                  </div>
-                  <h3 className="text-sm font-semibold leading-5">{bill.title}</h3>
-                  <p className="mt-1 line-clamp-2 text-sm text-slate-600">{bill.summary}</p>
-                </button>
-              ))}
-            </div>
-          </div>
+          <PreviousLookupsCard items={previousLookups} onSelect={runLookup} />
         </aside>
       </section>
     </main>
@@ -1010,11 +986,155 @@ function LoginPage({
   );
 }
 
-function Metric({ label, value, compact = false }: { label: string; value: string; compact?: boolean }) {
+function WatchlistCard({
+  interests,
+  enabledCount,
+  bills,
+  newTopic,
+  polling,
+  onNewTopicChange,
+  onAddInterest,
+  onToggleInterest,
+  onRefresh,
+  onSelectBill
+}: {
+  interests: Interest[];
+  enabledCount: number;
+  bills: MonitoringBill[];
+  newTopic: string;
+  polling: boolean;
+  onNewTopicChange: (value: string) => void;
+  onAddInterest: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onToggleInterest: (interest: Interest) => Promise<void>;
+  onRefresh: () => Promise<void>;
+  onSelectBill: (billId: string) => Promise<void>;
+}) {
   return (
-    <div className={compact ? "p-3" : "rounded border border-line bg-panel p-3"}>
-      <div className="text-xs font-semibold uppercase text-slate-500">{label}</div>
-      <div className="mt-1 break-words text-sm font-semibold">{value}</div>
+    <div className="rounded border border-line bg-white">
+      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+        <div className="flex items-center gap-2">
+          <Bell size={18} aria-hidden="true" />
+          <h2 className="text-base font-semibold">Your Watchlist</h2>
+        </div>
+        <button
+          onClick={() => void onRefresh()}
+          className="focus-ring inline-flex items-center gap-2 rounded border border-line px-3 py-1.5 text-sm font-medium"
+          disabled={polling}
+        >
+          {polling ? <Loader2 className="animate-spin" size={16} /> : <Radar size={16} />}
+          Refresh Bills
+        </button>
+      </div>
+      <div className="p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <p className="text-sm leading-6 text-slate-600">
+            Topics used to shape your in-app briefing and bill monitoring.
+          </p>
+          <span className="shrink-0 rounded border border-line bg-panel px-2 py-1 text-xs font-semibold">
+            {enabledCount} active
+          </span>
+        </div>
+        <form onSubmit={onAddInterest} className="mb-3 flex gap-2">
+          <input
+            className="focus-ring min-w-0 flex-1 rounded border border-line px-3 py-2 text-sm"
+            value={newTopic}
+            onChange={(event) => onNewTopicChange(event.target.value)}
+            placeholder="Add topic"
+            aria-label="Add watchlist topic"
+          />
+          <button
+            className="focus-ring inline-flex items-center justify-center rounded border border-line px-3 text-sm font-medium"
+            aria-label="Add topic"
+          >
+            <Plus size={16} aria-hidden="true" />
+          </button>
+        </form>
+        <div className="flex flex-wrap gap-2">
+          {interests.map((interest) => (
+            <button
+              key={interest.topic}
+              onClick={() => void onToggleInterest(interest)}
+              className={`focus-ring rounded border px-2 py-1 text-xs font-medium ${
+                interest.enabled
+                  ? "border-signal bg-emerald-50 text-signal"
+                  : "border-line bg-panel text-slate-500"
+              }`}
+            >
+              {interest.topic}
+            </button>
+          ))}
+        </div>
+        <div className="mt-4 border-t border-line pt-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold uppercase text-slate-500">Watchlist Bills</h3>
+            <span className="text-xs text-slate-500">{bills.length} shown</span>
+          </div>
+          <div className="grid gap-2">
+            {bills.length === 0 ? (
+              <p className="text-sm leading-6 text-slate-600">
+                No matching bills are saved yet. Refresh Bills checks for newly introduced bills tied to your active topics.
+              </p>
+            ) : null}
+            {bills.map((bill) => (
+              <button
+                key={bill.congress_bill_id}
+                type="button"
+                onClick={() => void onSelectBill(bill.congress_bill_id)}
+                className="focus-ring rounded border border-line bg-panel p-3 text-left transition hover:bg-white"
+              >
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold uppercase text-civic">{bill.congress_bill_id}</span>
+                  <span className="rounded bg-white px-2 py-0.5 text-xs">{bill.topic}</span>
+                </div>
+                <h4 className="text-sm font-semibold leading-5">{bill.title}</h4>
+                <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-600">{bill.summary}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PreviousLookupsCard({
+  items,
+  onSelect
+}: {
+  items: PreviousLookup[];
+  onSelect: (billId: string) => Promise<void>;
+}) {
+  return (
+    <div className="rounded border border-line bg-white">
+      <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+        <div className="flex items-center gap-2">
+          <CheckCircle2 size={18} aria-hidden="true" />
+          <h2 className="text-base font-semibold">Previous Lookups</h2>
+        </div>
+        <span className="text-xs text-slate-500">This browser</span>
+      </div>
+      <div className="divide-y divide-line">
+        {items.length === 0 ? (
+          <p className="p-4 text-sm leading-6 text-slate-600">
+            Search a bill to start building your lookup history.
+          </p>
+        ) : null}
+        {items.map((item) => (
+          <button
+            key={item.congress_bill_id}
+            type="button"
+            onClick={() => void onSelect(item.congress_bill_id)}
+            className="focus-ring block w-full p-4 text-left transition hover:bg-panel"
+          >
+            <div className="mb-1 flex items-center justify-between gap-3">
+              <span className="text-xs font-semibold uppercase text-civic">{item.congress_bill_id}</span>
+              <span className="rounded bg-slate-100 px-2 py-0.5 text-xs">{item.topic}</span>
+            </div>
+            <h3 className="text-sm font-semibold leading-5">{item.title}</h3>
+            <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-600">{item.summary}</p>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1254,14 +1374,14 @@ function HotTopicsCard({
       <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
         <div className="flex items-center gap-2">
           <Flame size={18} aria-hidden="true" />
-          <h2 className="text-base font-semibold">Hot Topics</h2>
+          <h2 className="text-base font-semibold">National Spotlight</h2>
         </div>
-        <span className="text-xs text-slate-500">Search ideas</span>
+        <span className="text-xs text-slate-500">Search prompts</span>
       </div>
       <div className="divide-y divide-line">
         {items.length === 0 ? (
           <p className="p-4 text-sm leading-6 text-slate-600">
-            Hot topics are temporarily unavailable.
+            National spotlight prompts are temporarily unavailable.
           </p>
         ) : null}
         {items.slice(0, 7).map((item) => (

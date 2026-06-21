@@ -25,9 +25,17 @@ type LookupResponse = {
     title: string;
     summary: string;
     sponsor: string;
+    sponsor_bioguide_id?: string | null;
+    sponsor_photo_url?: string | null;
     latest_action: string;
     status: string;
     topic: string;
+  };
+  sponsor?: {
+    name?: string;
+    party?: string;
+    state?: string;
+    photo_url?: string | null;
   };
   finance: { patterns?: string[]; top_industries?: string[]; confidence?: string };
   generated_summary: string;
@@ -50,6 +58,7 @@ type RepresentativeRecord = {
   district?: string | null;
   bioguide_id?: string | null;
   official_url?: string | null;
+  photo_url?: string | null;
 };
 
 type RepresentativeBillSignal = {
@@ -143,6 +152,17 @@ type RegistrationPayload = {
   zip_code?: string;
 };
 
+type LookupProgress = {
+  step?: string;
+  message: string;
+  detail?: string;
+};
+
+type LookupStreamEvent =
+  | (LookupProgress & { type: "progress" })
+  | { type: "result"; data: LookupResponse }
+  | { type: "error"; status?: number; detail?: string; error?: string; provider?: string };
+
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 const tokenStorageKey = "civic-pulse-token";
 const lastLookupStorageKey = "civic-pulse-last-lookup";
@@ -163,6 +183,7 @@ export default function Home() {
   const [representativeChecking, setRepresentativeChecking] = useState(false);
   const [newTopic, setNewTopic] = useState("");
   const [status, setStatus] = useState("Ready");
+  const [lookupProgress, setLookupProgress] = useState<LookupProgress[]>([]);
 
   useEffect(() => {
     void bootstrap();
@@ -370,30 +391,78 @@ export default function Home() {
     if (!nextBillId) return;
     setBillId(nextBillId);
     setLoading(true);
+    setLookupProgress([]);
     setStatus("Running bill lookup workflow");
     try {
-      const response = await fetch(`${apiBase}/api/bills/lookup`, {
+      const response = await fetch(`${apiBase}/api/bills/lookup/stream`, {
         method: "POST",
         headers: authToken ? authHeaders(authToken) : { "Content-Type": "application/json" },
         body: JSON.stringify({ bill_id: nextBillId })
       });
-      const payload = await response.json();
-      if (!response.ok) {
+      if (!response.ok || !response.body) {
         setLookup(null);
-        setStatus(payload.detail ?? "Lookup failed");
+        setStatus("Lookup failed");
         return;
       }
+      const payload = await readLookupStream(response.body);
+      if (!payload) return;
       setLookup(payload);
       setRepresentativeCheck(null);
       cacheLookup(nextBillId, payload);
       setStatus("Report generated");
       await loadRecent();
-    } catch {
+    } catch (error) {
       setLookup(null);
-      setStatus("Could not reach the API");
+      if (!(error instanceof Error) || error.message !== "LOOKUP_STREAM_ERROR") {
+        setStatus("Could not reach the API");
+      }
     } finally {
       setLoading(false);
     }
+  }
+
+  async function readLookupStream(body: ReadableStream<Uint8Array>) {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const payload = handleLookupStreamLine(line);
+        if (payload) return payload;
+      }
+    }
+
+    if (buffer.trim()) {
+      const payload = handleLookupStreamLine(buffer);
+      if (payload) return payload;
+    }
+
+    setLookup(null);
+    setStatus("Lookup ended before a report was generated");
+    return null;
+  }
+
+  function handleLookupStreamLine(line: string): LookupResponse | null {
+    if (!line.trim()) return null;
+    const event = JSON.parse(line) as LookupStreamEvent;
+    if (event.type === "progress") {
+      setLookupProgress((items) => [...items, event].slice(-6));
+      setStatus(event.message);
+      return null;
+    }
+    if (event.type === "error") {
+      setLookup(null);
+      setStatus(event.detail ?? event.error ?? "Lookup failed");
+      throw new Error("LOOKUP_STREAM_ERROR");
+    }
+    return event.data;
   }
 
   function restoreCachedLookup() {
@@ -412,16 +481,65 @@ export default function Home() {
     }
   }
 
-  function cacheLookup(nextBillId: string, payload: LookupResponse) {
+function cacheLookup(nextBillId: string, payload: LookupResponse) {
     window.localStorage.setItem(
       lastLookupStorageKey,
       JSON.stringify({ billId: nextBillId, lookup: payload, cachedAt: Date.now() })
     );
   }
 
+  function namesReferToSamePerson(left: string, right: string) {
+    const normalizedLeft = normalizedPersonName(left);
+    const normalizedRight = normalizedPersonName(right);
+    if (!normalizedLeft || !normalizedRight) return false;
+    const leftParts = new Set(normalizedLeft.split(" "));
+    const rightParts = new Set(normalizedRight.split(" "));
+    return (
+      normalizedLeft === normalizedRight ||
+      normalizedLeft.includes(normalizedRight) ||
+      normalizedRight.includes(normalizedLeft) ||
+      setsMatch(leftParts, rightParts) ||
+      setContainsAll(leftParts, rightParts) ||
+      setContainsAll(rightParts, leftParts)
+    );
+  }
+
+  function normalizedPersonName(value: string) {
+    return value
+      .replace(/\[[^\]]+\]/g, " ")
+      .replace(/Rep\.|Sen\.|Representative|Senator/gi, " ")
+      .replace(/[^a-zA-Z\s]/g, " ")
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((part) => part && !["jr", "sr", "ii", "iii", "iv"].includes(part))
+      .sort()
+      .join(" ");
+  }
+
+  function setsMatch(left: Set<string>, right: Set<string>) {
+    return left.size > 0 && left.size === right.size && setContainsAll(left, right);
+  }
+
+  function setContainsAll(left: Set<string>, right: Set<string>) {
+    if (right.size < 2) return false;
+    for (const item of right) {
+      if (!left.has(item)) return false;
+    }
+    return true;
+  }
+
   async function runRepresentativeCheck(representativeName: string) {
     const name = representativeName.trim();
     if (!authToken || !lookup || !name) return;
+    const cachedSignal = lookup.representative_context?.find((signal) =>
+      namesReferToSamePerson(signal.representative.name, name)
+    );
+    if (cachedSignal) {
+      setRepresentativeCheck(cachedSignal);
+      setStatus("Representative context loaded from current report");
+      return;
+    }
+
     setRepresentativeChecking(true);
     setStatus(`Checking ${name}`);
     try {
@@ -535,6 +653,10 @@ export default function Home() {
             </button>
           </form>
 
+          {loading && lookupProgress.length > 0 ? (
+            <LookupProgressList items={lookupProgress} />
+          ) : null}
+
           <div className="grid gap-4 p-4">
             {lookup ? (
               <>
@@ -550,19 +672,8 @@ export default function Home() {
                   </p>
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-[1.35fr_0.65fr_0.65fr]">
-                  <SponsorCard sponsor={lookup.bill.sponsor} />
-                  <SignalCard
-                    icon={<ShieldCheck size={17} aria-hidden="true" />}
-                    label="Source depth"
-                    value={lookup.confidence}
-                  />
-                  <SignalCard
-                    icon={<CircleDollarSign size={17} aria-hidden="true" />}
-                    label="Finance coverage"
-                    value={lookup.finance.confidence ?? "low"}
-                  />
-                </div>
+                <SponsorCard sponsor={lookup.bill.sponsor} photoUrl={lookup.bill.sponsor_photo_url ?? lookup.sponsor?.photo_url} />
+                <ReportCoverageCard lookup={lookup} />
 
                 <section>
                   <h4 className="mb-2 text-sm font-semibold uppercase text-slate-500">Political Read</h4>
@@ -971,20 +1082,31 @@ function RepresentativeLookupCard({
               Edit address
             </Link>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="grid gap-2 sm:grid-cols-2">
             {profile.representatives.map((representative) => (
               <button
                 key={`${representative.chamber}-${representative.name}`}
                 type="button"
-                onClick={() => setRepresentativeName(representative.name)}
-                className="focus-ring rounded border border-line bg-panel px-2 py-1 text-left text-xs"
+                onClick={() => {
+                  setRepresentativeName(representative.name);
+                  void onRun(representative.name);
+                }}
+                className="focus-ring flex items-center gap-2 rounded border border-line bg-panel p-2 text-left text-xs"
+                disabled={loading || !lookup}
               >
-                <span className="block font-medium">{representative.name}</span>
-                <span className="text-slate-600">
-                  {representative.chamber}
-                </span>
-                <span className={`mt-1 inline-flex rounded border px-1.5 py-0.5 text-[11px] font-semibold ${partyBadgeClass(representative.party)}`}>
-                  {partyLabel(representative.party)}
+                <MemberAvatar
+                  name={representative.name}
+                  photoUrl={representative.photo_url}
+                  size="sm"
+                />
+                <span className="min-w-0">
+                  <span className="block truncate font-medium">{representative.name}</span>
+                  <span className="mt-1 flex flex-wrap items-center gap-1 text-slate-600">
+                    <span>{representative.chamber}</span>
+                    <span className={`inline-flex rounded border px-1.5 py-0.5 text-[11px] font-semibold ${partyBadgeClass(representative.party)}`}>
+                      {partyLabel(representative.party)}
+                    </span>
+                  </span>
                 </span>
               </button>
             ))}
@@ -1165,6 +1287,35 @@ function HotTopicsCard({
   );
 }
 
+function LookupProgressList({ items }: { items: LookupProgress[] }) {
+  return (
+    <div className="border-b border-line bg-panel px-4 py-3">
+      <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
+        <Loader2 className="animate-spin text-civic" size={14} aria-hidden="true" />
+        Building Report
+      </div>
+      <ol className="grid gap-2">
+        {items.map((item, index) => {
+          const isActive = index === items.length - 1;
+          return (
+            <li key={`${item.step ?? item.message}-${index}`} className="flex gap-2 text-xs leading-5">
+              {isActive ? (
+                <Loader2 className="mt-0.5 shrink-0 animate-spin text-civic" size={14} aria-hidden="true" />
+              ) : (
+                <CheckCircle2 className="mt-0.5 shrink-0 text-civic" size={14} aria-hidden="true" />
+              )}
+              <span>
+                <span className="font-semibold text-slate-800">{item.message}</span>
+                {item.detail ? <span className="block text-slate-500">{item.detail}</span> : null}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
 function RepresentativeContext({
   signals,
   title = "Your Representative Context"
@@ -1178,16 +1329,21 @@ function RepresentativeContext({
       <div className="grid gap-2">
         {signals.map((signal) => (
           <article key={`${signal.representative.chamber}-${signal.representative.name}`} className="text-sm leading-6">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold">{signal.representative.name}</span>
-              <span className={`rounded border px-2 py-0.5 text-xs font-semibold ${partyBadgeClass(signal.representative.party)}`}>
-                {partyLabel(signal.representative.party)}
-              </span>
-              <span className="rounded bg-white px-2 py-0.5 text-xs font-medium text-slate-600">
-                {signal.signal}
-              </span>
+            <div className="flex items-start gap-2">
+              <MemberAvatar name={signal.representative.name} photoUrl={signal.representative.photo_url} size="lg" />
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold">{signal.representative.name}</span>
+                  <span className={`rounded border px-2 py-0.5 text-xs font-semibold ${partyBadgeClass(signal.representative.party)}`}>
+                    {partyLabel(signal.representative.party)}
+                  </span>
+                  <span className="rounded bg-white px-2 py-0.5 text-xs font-medium text-slate-600">
+                    {signal.signal}
+                  </span>
+                </div>
+                <p className="text-xs leading-5 text-slate-600">{signal.detail}</p>
+              </div>
             </div>
-            <p className="text-xs leading-5 text-slate-600">{signal.detail}</p>
             {signal.ai_context ? (
               <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2">
                 <div className="mb-1 inline-flex items-center gap-1 text-xs font-semibold uppercase text-amber-800">
@@ -1230,16 +1386,19 @@ function RepresentativeContext({
   );
 }
 
-function SponsorCard({ sponsor }: { sponsor: string }) {
+function SponsorCard({ sponsor, photoUrl }: { sponsor: string; photoUrl?: string | null }) {
   const party = parseSponsorParty(sponsor);
   const color = partyColor(party.code);
 
   return (
     <div className="rounded border border-line bg-panel p-3">
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-xs font-semibold uppercase text-slate-500">Sponsor</div>
-          <div className="mt-1 break-words text-sm font-semibold">{sponsor}</div>
+        <div className="flex min-w-0 items-start gap-2">
+          <MemberAvatar name={sponsor} photoUrl={photoUrl} size="lg" />
+          <div className="min-w-0">
+            <div className="text-xs font-semibold uppercase text-slate-500">Sponsor</div>
+            <div className="mt-1 break-words text-sm font-semibold">{sponsor}</div>
+          </div>
         </div>
         <span className={`inline-flex shrink-0 items-center gap-1 rounded border px-2 py-1 text-xs font-semibold ${color}`}>
           <UserRound size={13} aria-hidden="true" />
@@ -1247,6 +1406,126 @@ function SponsorCard({ sponsor }: { sponsor: string }) {
         </span>
       </div>
     </div>
+  );
+}
+
+function ReportCoverageCard({ lookup }: { lookup: LookupResponse }) {
+  const representativeCount = lookup.representative_context?.length ?? 0;
+
+  return (
+    <section>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h4 className="text-sm font-semibold uppercase text-slate-500">Report Context</h4>
+        <span className="text-xs text-slate-500">{representativeCount} representative checks included</span>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        <CoverageMetric
+          icon={<ShieldCheck size={15} aria-hidden="true" />}
+          label="Source Context"
+          value={lookup.confidence}
+          definition="How much supporting evidence the report found beyond the basic bill record."
+          description={coverageDescription(lookup.confidence)}
+        />
+        <CoverageMetric
+          icon={<CircleDollarSign size={15} aria-hidden="true" />}
+          label="Campaign Finance"
+          value={lookup.finance.confidence ?? "low"}
+          definition="Whether sponsor-related campaign-finance records were found for review."
+          description={financeCoverageDescription(lookup.finance.confidence ?? "low")}
+        />
+      </div>
+    </section>
+  );
+}
+
+function CoverageMetric({
+  icon,
+  label,
+  value,
+  definition,
+  description
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  definition: string;
+  description: string;
+}) {
+  return (
+    <div className="rounded border border-line bg-panel p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-1.5 text-xs font-semibold uppercase text-slate-500">
+          {icon}
+          {label}
+        </div>
+        <span className={`rounded border px-2 py-0.5 text-xs font-semibold uppercase ${coverageValueClass(value)}`}>
+          {value}
+        </span>
+      </div>
+      <p className="mt-2 text-sm leading-6 text-slate-700">{definition}</p>
+      <p className="mt-1 text-xs leading-5 text-slate-500">{description}</p>
+    </div>
+  );
+}
+
+function coverageValueClass(value: string) {
+  const normalized = value.toLowerCase();
+  if (normalized === "high") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (normalized === "medium") return "border-amber-200 bg-amber-50 text-amber-800";
+  if (normalized === "low") return "border-slate-200 bg-slate-50 text-slate-600";
+  return "border-slate-200 bg-white text-slate-600";
+}
+
+function coverageDescription(value: string) {
+  const normalized = value.toLowerCase();
+  if (normalized === "high") return "Official bill data plus supporting context were found.";
+  if (normalized === "medium") return "Core bill data was found, with some supporting context.";
+  return "Limited supporting context was available for this report.";
+}
+
+function financeCoverageDescription(value: string) {
+  const normalized = value.toLowerCase();
+  if (normalized === "high") return "Sponsor-related campaign-finance records were found.";
+  if (normalized === "medium") return "Some campaign-finance matches were found, but review is limited.";
+  return "No strong sponsor campaign-finance match was found.";
+}
+
+function MemberAvatar({
+  name,
+  photoUrl,
+  size
+}: {
+  name: string;
+  photoUrl?: string | null;
+  size: "sm" | "md" | "lg";
+}) {
+  const dimensions = size === "sm" ? "h-12 w-12" : size === "md" ? "h-14 w-14" : "h-16 w-16";
+  const initials = name
+    .replace(/Rep\.|Sen\./g, "")
+    .replace(/\[[^\]]+\]/g, "")
+    .split(/[,\s]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
+
+  if (photoUrl) {
+    return (
+      <img
+        src={photoUrl}
+        alt=""
+        className={`${dimensions} shrink-0 rounded-full border border-line object-cover object-top`}
+        onError={(event) => {
+          event.currentTarget.style.display = "none";
+        }}
+      />
+    );
+  }
+
+  return (
+    <span className={`${dimensions} inline-flex shrink-0 items-center justify-center rounded-full border border-line bg-white text-xs font-semibold text-slate-500`}>
+      {initials || <UserRound size={16} aria-hidden="true" />}
+    </span>
   );
 }
 

@@ -89,6 +89,77 @@ class _FakeRepresentativePositionAsyncClient:
         )
 
 
+class _FakeUnclearRepresentativePositionAsyncClient:
+    def __init__(self, **_: object) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+    async def post(self, url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={
+                "output": [
+                    {
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": (
+                                    '{"position":"unclear",'
+                                    '"reason":"The public sources identify the bill and representative but do not establish whether the senator supports or opposes it.",'
+                                    '"sources":[{"title":"Bill tracker","url":"https://example.com/bill"}],'
+                                    '"confidence":"low"}'
+                                ),
+                            }
+                        ]
+                    }
+                ]
+            },
+        )
+
+
+class _FakeRepresentativeWebSearchAsyncClient:
+    last_request: dict | None = None
+
+    def __init__(self, **_: object) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+    async def post(self, url: str, **kwargs: object) -> httpx.Response:
+        self.__class__.last_request = {"url": url, **kwargs}
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={
+                "output": [
+                    {
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": (
+                                    '{"position":"supports",'
+                                    '"reason":"Public sources found by web search say the senator backed the bill because it creates a federal stablecoin framework.",'
+                                    '"sources":[{"title":"Senator statement","url":"https://www.senate.gov/member-statement"}],'
+                                    '"confidence":"medium"}'
+                                ),
+                            }
+                        ]
+                    }
+                ]
+            },
+        )
+
+
 def test_openai_report_generator_posts_grounded_state_and_returns_structured_report(monkeypatch):
     _FakeAsyncClient.last_request = None
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
@@ -179,3 +250,55 @@ def test_openai_report_generator_summarizes_representative_position_evidence(mon
     assert _FakeRepresentativePositionAsyncClient.last_request is not None
     request = _FakeRepresentativePositionAsyncClient.last_request["json"]
     assert request["text"]["format"]["name"] == "civic_pulse_representative_position_reason"
+
+
+def test_openai_report_generator_keeps_unclear_public_context(monkeypatch):
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeUnclearRepresentativePositionAsyncClient)
+    settings = Settings(openai_api_key="test-key", openai_api_live=True)
+
+    reason = asyncio.run(
+        OpenAIReportGenerator(settings).generate_representative_position_reason(
+            bill={"congress_bill_id": "s-1582-119", "title": "GENIUS Act"},
+            representative={"name": "Cruz, Ted", "state": "TX"},
+            signal="No direct signal found",
+            search_results=[
+                {
+                    "title": "Bill tracker",
+                    "url": "https://example.com/bill",
+                    "snippet": "Bill tracking page for S. 1582.",
+                    "source": "example.com",
+                }
+            ],
+        )
+    )
+
+    assert reason is not None
+    assert reason["position"] == "unclear"
+    assert "do not establish" in reason["reason"]
+
+
+def test_openai_report_generator_can_use_web_search_for_representative_context(monkeypatch):
+    _FakeRepresentativeWebSearchAsyncClient.last_request = None
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeRepresentativeWebSearchAsyncClient)
+    settings = Settings(
+        openai_api_key="test-key",
+        openai_api_live=True,
+        openai_web_search_enabled=True,
+        openai_web_search_context_size="low",
+    )
+
+    reason = asyncio.run(
+        OpenAIReportGenerator(settings).generate_representative_web_context(
+            bill={"congress_bill_id": "s-1582-119", "title": "GENIUS Act"},
+            representative={"name": "Cruz, Ted", "state": "TX"},
+            signal="No direct signal found",
+            search_results=[],
+        )
+    )
+
+    assert reason is not None
+    assert reason["position"] == "supports"
+    assert _FakeRepresentativeWebSearchAsyncClient.last_request is not None
+    request = _FakeRepresentativeWebSearchAsyncClient.last_request["json"]
+    assert request["tools"] == [{"type": "web_search", "search_context_size": "low"}]
+    assert request["text"]["format"]["name"] == "civic_pulse_representative_web_context"

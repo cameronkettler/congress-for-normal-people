@@ -84,7 +84,43 @@ class OpenAIReportGenerator:
             return None
 
         report = self._extract_json(response.json())
-        if not report or report.get("position") == "unclear":
+        if not report or not report.get("reason"):
+            return None
+        return report
+
+    async def generate_representative_web_context(
+        self,
+        *,
+        bill: dict[str, Any],
+        representative: dict[str, Any],
+        signal: str,
+        search_results: list[dict[str, str]],
+    ) -> dict[str, Any] | None:
+        if not self.enabled or not self.settings.openai_web_search_enabled:
+            return None
+
+        payload = self._build_representative_web_search_payload(
+            bill=bill,
+            representative=representative,
+            signal=signal,
+            search_results=search_results,
+        )
+        try:
+            async with httpx.AsyncClient(timeout=self.settings.openai_api_timeout_seconds) as client:
+                response = await client.post(
+                    self.endpoint,
+                    headers={
+                        "Authorization": f"Bearer {self.settings.openai_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+                response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+
+        report = self._extract_json(response.json())
+        if not report or not report.get("reason"):
             return None
         return report
 
@@ -209,8 +245,9 @@ class OpenAIReportGenerator:
                         "or ideological motives. If search snippets or the official signal provide relevant "
                         "context about party alignment, leadership pressure, presidential priorities, prior "
                         "votes, district interests, or stated policy concerns, synthesize that context with "
-                        "clear attribution. If no rationale can be supported, return position='unclear' and "
-                        "an empty reason."
+                        "clear attribution. If no support or criticism can be established, return "
+                        "position='unclear' with a brief reason explaining what the public sources do and "
+                        "do not establish."
                     ),
                 },
                 {
@@ -230,7 +267,7 @@ class OpenAIReportGenerator:
                                 "Prefer snippets that explain rationale, policy concerns, strategic pressure, constituent impact, or party debate.",
                                 "Use sources that mention the representative by name or clearly come from the representative's official account.",
                                 "Do not cite unrelated posts from other representatives or generic bill trackers as evidence of this representative's rationale.",
-                                "Do not use generic bill-summary snippets as the reason unless no better source exists.",
+                                "Do not use generic bill-summary snippets as evidence of the member's position; if only generic bill trackers are available, say they do not establish the member's stance.",
                                 "Do not claim support or criticism unless the snippets clearly support it.",
                                 "Keep the note useful to a constituent, not a campaign argument.",
                                 "Return at most three source links used.",
@@ -245,39 +282,104 @@ class OpenAIReportGenerator:
                     "type": "json_schema",
                     "name": "civic_pulse_representative_position_reason",
                     "strict": True,
-                    "schema": {
+                    "schema": self._representative_position_schema(),
+                }
+            },
+        }
+
+    def _build_representative_web_search_payload(
+        self,
+        *,
+        bill: dict[str, Any],
+        representative: dict[str, Any],
+        signal: str,
+        search_results: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        return {
+            "model": self.settings.openai_model,
+            "reasoning": {"effort": self.settings.openai_reasoning_effort},
+            "tools": [
+                {
+                    "type": "web_search",
+                    "search_context_size": self.settings.openai_web_search_context_size,
+                }
+            ],
+            "input": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Congress For Normal People's representative-context web researcher. Use web search "
+                        "to find public evidence about whether a member of Congress supports, criticizes, or has an "
+                        "unclear position on a bill. Prioritize official member pages, Congress.gov, recorded-vote "
+                        "summaries, credible news, and reputable civic organizations. Do not invent quotes, voting "
+                        "records, motives, presidential pressure, or party pressure. If public evidence is weak, "
+                        "return position='unclear' and explain what was and was not found."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "task": "Search the web for representative or senator sentiment on this bill, then return a concise structured assessment.",
+                            "bill": bill,
+                            "representative": representative,
+                            "known_signal": signal,
+                            "existing_serpapi_results": search_results,
+                            "requirements": [
+                                "Search for this member, this bill title, and this bill number.",
+                                "Use official votes, sponsor or cosponsor pages, member statements, and high-quality public reporting as strongest evidence.",
+                                "If the member voted for, sponsored, or cosponsored the bill, treat that as support unless a source clearly says otherwise.",
+                                "If the member voted against or publicly criticized the bill, treat that as criticism.",
+                                "Explain why the member likely supports or criticizes the bill only when the sources provide a rationale.",
+                                "When the public context is only generic bill tracking, return position='unclear'.",
+                                "Return at most three source links used.",
+                            ],
+                        },
+                        default=str,
+                    ),
+                },
+            ],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "civic_pulse_representative_web_context",
+                    "strict": True,
+                    "schema": self._representative_position_schema(),
+                }
+            },
+        }
+
+    def _representative_position_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["position", "reason", "sources", "confidence"],
+            "properties": {
+                "position": {
+                    "type": "string",
+                    "enum": ["supports", "criticizes", "unclear"],
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Two or three objective sentences grounded only in the provided signal and public sources.",
+                },
+                "sources": {
+                    "type": "array",
+                    "maxItems": 3,
+                    "items": {
                         "type": "object",
                         "additionalProperties": False,
-                        "required": ["position", "reason", "sources", "confidence"],
+                        "required": ["title", "url"],
                         "properties": {
-                            "position": {
-                                "type": "string",
-                                "enum": ["supports", "criticizes", "unclear"],
-                            },
-                            "reason": {
-                                "type": "string",
-                                "description": "Two or three objective sentences grounded only in the provided signal and search snippets.",
-                            },
-                            "sources": {
-                                "type": "array",
-                                "maxItems": 3,
-                                "items": {
-                                    "type": "object",
-                                    "additionalProperties": False,
-                                    "required": ["title", "url"],
-                                    "properties": {
-                                        "title": {"type": "string"},
-                                        "url": {"type": "string"},
-                                    },
-                                },
-                            },
-                            "confidence": {
-                                "type": "string",
-                                "enum": ["low", "medium", "high"],
-                            },
+                            "title": {"type": "string"},
+                            "url": {"type": "string"},
                         },
                     },
-                }
+                },
+                "confidence": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                },
             },
         }
 

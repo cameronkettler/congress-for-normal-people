@@ -653,6 +653,14 @@ export default function Home() {
             <span className="hidden text-slate-400 md:inline">|</span>
             <span className="hidden md:inline">{user.email}</span>
             <Link
+              href="/representatives"
+              className="focus-ring grid h-8 w-8 place-items-center rounded border border-line text-slate-700"
+              aria-label="Representative deep dive"
+              title="Representative deep dive"
+            >
+              <BrainCircuit size={15} aria-hidden="true" />
+            </Link>
+            <Link
               href="/profile"
               className="focus-ring grid h-8 w-8 place-items-center rounded border border-line text-slate-700"
               aria-label="Profile settings"
@@ -866,8 +874,14 @@ function LoginPage({
           </div>
           <h1 className="text-3xl font-semibold tracking-normal">Congress For Normal People</h1>
           <p className="mt-3 max-w-xl text-sm leading-6 text-slate-700">
-            Sign in to keep monitoring topics tied to your account. Your bill lookups stay source-grounded,
-            while alert topics become configurable per user instead of global for everyone.
+            Track legislation in plain English, understand what federal bills would actually do,
+            and see how your representatives connect to votes, sponsorship, public reporting, and
+            major policy debates.
+          </p>
+          <p className="mt-3 max-w-xl text-sm leading-6 text-slate-700">
+            Congress For Normal People helps voters follow bills about artificial intelligence,
+            housing, healthcare, privacy, energy, elections, immigration, national security, and
+            other national issues with source-grounded summaries and AI-assisted context.
           </p>
         </div>
 
@@ -1220,7 +1234,7 @@ function RepresentativeLookupCard({
                   size="sm"
                 />
                 <span className="min-w-0">
-                  <span className="block truncate font-medium">{representative.name}</span>
+                  <span className="block truncate font-medium">{displayPersonName(representative.name)}</span>
                   <span className="mt-1 flex flex-wrap items-center gap-1 text-slate-600">
                     <span>{representative.chamber}</span>
                     <span className={`inline-flex rounded border px-1.5 py-0.5 text-[11px] font-semibold ${partyBadgeClass(representative.party)}`}>
@@ -1348,7 +1362,7 @@ function ProfileCard({
           <div className="mt-2 grid gap-2">
             {profile.representatives.map((representative) => (
               <div key={`${representative.chamber}-${representative.name}`} className="leading-5">
-                <div className="font-medium">{representative.name}</div>
+                <div className="font-medium">{displayPersonName(representative.name)}</div>
                 <div className="text-xs text-slate-600">
                   {representative.chamber} · {representative.party}
                 </div>
@@ -1453,7 +1467,7 @@ function RepresentativeContext({
               <MemberAvatar name={signal.representative.name} photoUrl={signal.representative.photo_url} size="lg" />
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-semibold">{signal.representative.name}</span>
+                  <span className="font-semibold">{displayPersonName(signal.representative.name)}</span>
                   <span className={`rounded border px-2 py-0.5 text-xs font-semibold ${partyBadgeClass(signal.representative.party)}`}>
                     {partyLabel(signal.representative.party)}
                   </span>
@@ -1514,10 +1528,10 @@ function SponsorCard({ sponsor, photoUrl }: { sponsor: string; photoUrl?: string
     <div className="rounded border border-line bg-panel p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-2">
-          <MemberAvatar name={sponsor} photoUrl={photoUrl} size="lg" />
+          <MemberAvatar name={displayPersonName(sponsor)} photoUrl={photoUrl} size="lg" />
           <div className="min-w-0">
             <div className="text-xs font-semibold uppercase text-slate-500">Sponsor</div>
-            <div className="mt-1 break-words text-sm font-semibold">{sponsor}</div>
+            <div className="mt-1 break-words text-sm font-semibold">{displayPersonName(sponsor)}</div>
           </div>
         </div>
         <span className={`inline-flex shrink-0 items-center gap-1 rounded border px-2 py-1 text-xs font-semibold ${color}`}>
@@ -1620,7 +1634,7 @@ function MemberAvatar({
   size: "sm" | "md" | "lg";
 }) {
   const dimensions = size === "sm" ? "h-12 w-12" : size === "md" ? "h-14 w-14" : "h-16 w-16";
-  const initials = name
+  const initials = displayPersonName(name)
     .replace(/Rep\.|Sen\./g, "")
     .replace(/\[[^\]]+\]/g, "")
     .split(/[,\s]+/)
@@ -1647,6 +1661,24 @@ function MemberAvatar({
       {initials || <UserRound size={16} aria-hidden="true" />}
     </span>
   );
+}
+
+function displayPersonName(value: string) {
+  const text = value.replace(/\s+/g, " ").trim();
+  const bracket = text.match(/\s*(\[[^\]]+\])\s*$/)?.[1] ?? "";
+  const withoutBracket = bracket ? text.replace(/\s*\[[^\]]+\]\s*$/, "").trim() : text;
+  const titleMatch = withoutBracket.match(/^(Rep\.|Sen\.|Representative|Senator)\s+(.+)$/i);
+  const title = titleMatch?.[1] ?? "";
+  const name = titleMatch?.[2] ?? withoutBracket;
+
+  if (!name.includes(",")) return [title, name, bracket].filter(Boolean).join(" ");
+
+  const [last, rest] = name.split(",", 2).map((part) => part.trim());
+  const suffixes = new Set(["jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v"]);
+  const restParts = rest.split(/\s+/).filter(Boolean);
+  const suffix = restParts.filter((part) => suffixes.has(part.toLowerCase()));
+  const given = restParts.filter((part) => !suffixes.has(part.toLowerCase()));
+  return [title, ...given, last, ...suffix, bracket].filter(Boolean).join(" ");
 }
 
 function SignalCard({

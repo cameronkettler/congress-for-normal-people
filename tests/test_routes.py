@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 
 from apps.api.app.api import routes
 from packages.agents.bill_lookup import ProviderLookupError
-from packages.db.models import Base, ReportCache
-from packages.shared.schemas import BillLookupRequest
+from packages.db.models import Base, ReportCache, RepresentativeDeepDiveCache, User
+from packages.shared.schemas import BillLookupRequest, RepresentativeDeepDiveResponse
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -121,3 +121,52 @@ def test_cached_report_response_returns_fresh_full_report_without_workflow():
     assert response.bill.congress_bill_id == "hr-22-119"
     assert response.generated_summary == "Cached generated summary"
     assert response.representative_context[0].detail == "Cached representative context"
+
+
+def test_cached_representative_deep_dive_response_returns_fresh_profile():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    user = User(id=7, email="cache@example.com", password_hash="hash")
+    db.add(user)
+    db.add(
+        RepresentativeDeepDiveCache(
+            profile_key="user:7:no-location",
+            topics_key='["defense"]',
+            response_json={
+                "items": [
+                    {
+                        "representative": {
+                            "name": "Cornyn, John",
+                            "chamber": "Senate",
+                            "party": "Republican",
+                            "state": "TX",
+                        },
+                        "serving_since": "2002",
+                        "next_election": "Lost the 2026 runoff.",
+                        "summary": "Cached deep dive",
+                        "money_context": "Cached money context",
+                        "sources": [{"label": "Source", "url": "https://example.com", "description": "Cached source"}],
+                    }
+                ],
+            },
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    db.commit()
+
+    response = routes.cached_representative_deep_dive_response(db, user, ["Defense"])
+
+    assert response is not None
+    assert response.items[0].representative.name == "John Cornyn"
+    assert response.items[0].summary == "Cached deep dive"
+
+
+def test_representative_deep_dive_cache_skips_partial_responses():
+    response = RepresentativeDeepDiveResponse(
+        items=[],
+        warning="Some representative deep dives were unavailable.",
+    )
+
+    assert not routes.representative_deep_dive_response_is_cacheable(response)

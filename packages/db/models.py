@@ -75,6 +75,19 @@ class ReportCache(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
+class RepresentativeDeepDiveCache(Base):
+    __tablename__ = "representative_deep_dive_cache"
+    __table_args__ = (
+        UniqueConstraint("profile_key", "topics_key", name="uq_representative_deep_dive_profile_topics"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    profile_key = Column(String(160), nullable=False, index=True)
+    topics_key = Column(Text, nullable=False)
+    response_json = Column(JSON, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
 class User(Base):
     __tablename__ = "users"
 

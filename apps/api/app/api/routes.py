@@ -21,8 +21,9 @@ from packages.agents.bill_lookup import BillLookupWorkflow, ProviderLookupError
 from packages.agents.bill_lookup.input_resolver import BillInputResolutionError
 from packages.agents.bill_lookup.report_generator import OpenAIReportGenerator
 from packages.agents.bill_monitoring import BillMonitoringWorkflow
+from packages.agents.representative_deep_dive import RepresentativeDeepDiveWorkflow
 from packages.db import get_session
-from packages.db.models import Bill, BillMonitoring, BillPositionSearchCache, GeneratedReport, ReportCache, RepresentativeSearchCache, User, UserProfile, UserSession, UserTopicPreference
+from packages.db.models import Bill, BillMonitoring, BillPositionSearchCache, GeneratedReport, ReportCache, RepresentativeDeepDiveCache, RepresentativeSearchCache, User, UserProfile, UserSession, UserTopicPreference
 from packages.ingestion.congress import CongressClient
 from packages.ingestion.search import SearchResult, SerpApiClient
 from packages.jobs.poll_new_bills import poll_new_bills
@@ -37,6 +38,8 @@ from packages.shared.schemas import (
     MonitoringBill,
     MonitoringRecentResponse,
     RepresentativeBillSignal,
+    RepresentativeDeepDive,
+    RepresentativeDeepDiveResponse,
     RepresentativeRecord,
     SourceReference,
     UserProfileResponse,
@@ -406,6 +409,196 @@ async def representative_context_lookup(
         senate_votes=senate_votes,
         db=db,
     )
+
+
+@router.get("/representatives/deep-dive", response_model=RepresentativeDeepDiveResponse)
+async def representative_deep_dive(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    try:
+        profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).one_or_none()
+        if profile is None:
+            return RepresentativeDeepDiveResponse(
+                items=[],
+                warning="Add an address to see representative deep dives.",
+            )
+
+        representatives, warning = await representatives_for_profile(profile)
+        topics = sorted(enabled_topics_for_user(db, user))
+        if cached_response := cached_representative_deep_dive_response(db, user, topics):
+            return cached_response
+        workflow = RepresentativeDeepDiveWorkflow()
+        items = [
+            await workflow.run(representative=representative, watchlist_topics=topics)
+            for representative in representatives
+        ]
+        response = RepresentativeDeepDiveResponse(items=items, warning=warning)
+        save_representative_deep_dive_cache(db, user, topics, response)
+        return response
+    except Exception as exc:
+        logger.exception(
+            "representative deep dive failed",
+            extra={"endpoint": "/api/representatives/deep-dive", "user_id": user.id},
+        )
+        return RepresentativeDeepDiveResponse(
+            items=[],
+            warning="Representative deep dives are temporarily unavailable.",
+        )
+
+
+@router.get("/representatives/deep-dive/stream")
+async def representative_deep_dive_stream(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    return StreamingResponse(
+        stream_representative_deep_dive(user=user, db=db),
+        media_type="application/x-ndjson",
+    )
+
+
+async def stream_representative_deep_dive(user: User, db: Session):
+    items = []
+    warning = None
+    try:
+        yield stream_event(
+            {
+                "type": "progress",
+                "step": "load_profile",
+                "label": "Loading saved address",
+                "detail": "Checking your profile for the address used to find your House representative and senators.",
+            }
+        )
+        profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).one_or_none()
+        if profile is None:
+            yield stream_event(
+                {
+                    "type": "result",
+                    "data": RepresentativeDeepDiveResponse(
+                        items=[],
+                        warning="Add an address to see representative deep dives.",
+                    ).model_dump(mode="json"),
+                }
+            )
+            return
+
+        yield stream_event(
+            {
+                "type": "progress",
+                "step": "resolve_representatives",
+                "label": "Resolving your representatives",
+                "detail": "Using your saved district to load your House representative and two senators.",
+            }
+        )
+        representatives, warning = await representatives_for_profile(profile)
+        topics = sorted(enabled_topics_for_user(db, user))
+        if cached_response := cached_representative_deep_dive_response(db, user, topics):
+            yield stream_event(
+                {
+                    "type": "progress",
+                    "step": "cache_hit",
+                    "label": "Loaded cached representative deep dive",
+                    "detail": "Using a saved deep dive from the last 24 hours.",
+                }
+            )
+            yield stream_event({"type": "result", "data": cached_response.model_dump(mode="json")})
+            return
+        workflow = RepresentativeDeepDiveWorkflow()
+        seen_representatives = set()
+
+        for representative in representatives:
+            representative_key = (
+                representative.bioguide_id
+                or f"{representative.chamber}-{representative.state}-{representative.district}-{representative.name}"
+            )
+            if representative_key in seen_representatives:
+                continue
+            seen_representatives.add(representative_key)
+            yield stream_event(
+                {
+                    "type": "progress",
+                    "step": "start_representative",
+                    "representative": representative.name,
+                    "label": f"Starting {representative.name}",
+                    "detail": "Building a profile from official records, finance coverage, and public-source research.",
+                }
+            )
+            try:
+                async for event in workflow.run_with_progress(
+                    representative=representative,
+                    watchlist_topics=topics,
+                ):
+                    if event.get("type") == "item":
+                        item = event["data"]
+                        items.append(item)
+                        yield stream_event(
+                            {
+                                "type": "item",
+                                "data": item.model_dump(mode="json"),
+                            }
+                        )
+                    else:
+                        yield stream_event(event)
+            except Exception:
+                logger.exception(
+                    "representative deep dive item failed",
+                    extra={
+                        "endpoint": "/api/representatives/deep-dive/stream",
+                        "user_id": user.id,
+                        "representative": representative.name,
+                    },
+                )
+                warning = "Some representative deep dives were unavailable; showing the results that completed."
+                fallback_item = RepresentativeDeepDive(
+                    representative=representative,
+                    summary=(
+                        f"A full deep dive for {representative.name} could not be completed. "
+                        "Official representative details are still shown, but public-theme and money-context research should be retried."
+                    ),
+                    money_context="Money-context research did not complete for this representative.",
+                    caveats=["This profile is incomplete because one research step failed."],
+                )
+                items.append(fallback_item)
+                yield stream_event(
+                    {
+                        "type": "item",
+                        "data": fallback_item.model_dump(mode="json"),
+                    }
+                )
+                yield stream_event(
+                    {
+                        "type": "progress",
+                        "step": "representative_unavailable",
+                        "representative": representative.name,
+                        "label": f"Skipped {representative.name}",
+                        "detail": "This representative's deep dive could not be completed, so the available results will still be shown.",
+                    }
+                )
+
+        response = RepresentativeDeepDiveResponse(
+            items=items,
+            warning=warning,
+        )
+        save_representative_deep_dive_cache(db, user, topics, response)
+        yield stream_event(
+            {
+                "type": "result",
+                "data": response.model_dump(mode="json"),
+            }
+        )
+    except Exception as exc:
+        logger.exception(
+            "representative deep dive stream failed",
+            extra={"endpoint": "/api/representatives/deep-dive/stream", "user_id": user.id},
+        )
+        yield stream_event(
+            {
+                "type": "error",
+                "status": 502,
+                "detail": "Representative deep dives are temporarily unavailable.",
+            }
+        )
 
 
 def lookup_error_response(provider: str) -> JSONResponse:
@@ -1560,6 +1753,7 @@ def enabled_topics_for_user(db: Session, user: User) -> set[str]:
 
 
 REPORT_CACHE_TTL = timedelta(days=1)
+REPRESENTATIVE_DEEP_DIVE_CACHE_TTL = timedelta(days=1)
 
 
 def cached_report_response(
@@ -1660,6 +1854,98 @@ def report_cache_is_fresh(created_at: datetime | None) -> bool:
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
     return datetime.now(timezone.utc) - created_at <= REPORT_CACHE_TTL
+
+
+def cached_representative_deep_dive_response(
+    db: Session,
+    user: User,
+    topics: list[str],
+) -> RepresentativeDeepDiveResponse | None:
+    profile_key = report_profile_key(db, user)
+    topics_key = representative_deep_dive_topics_key(topics)
+    try:
+        record = (
+            db.query(RepresentativeDeepDiveCache)
+            .filter(
+                RepresentativeDeepDiveCache.profile_key == profile_key,
+                RepresentativeDeepDiveCache.topics_key == topics_key,
+            )
+            .order_by(RepresentativeDeepDiveCache.created_at.desc())
+            .first()
+        )
+    except Exception:
+        logger.debug(
+            "representative deep dive cache lookup skipped",
+            extra={"profile_key": profile_key, "topics_key": topics_key},
+        )
+        return None
+    if record is None or not representative_deep_dive_cache_is_fresh(record.created_at):
+        return None
+    try:
+        return RepresentativeDeepDiveResponse.model_validate(record.response_json)
+    except Exception:
+        logger.warning(
+            "cached representative deep dive could not be parsed",
+            extra={"profile_key": profile_key, "cache_id": getattr(record, "id", None)},
+        )
+        return None
+
+
+def save_representative_deep_dive_cache(
+    db: Session,
+    user: User,
+    topics: list[str],
+    response: RepresentativeDeepDiveResponse,
+) -> None:
+    if not representative_deep_dive_response_is_cacheable(response):
+        return
+    profile_key = report_profile_key(db, user)
+    topics_key = representative_deep_dive_topics_key(topics)
+    response_json = response.model_dump(mode="json")
+    record = (
+        db.query(RepresentativeDeepDiveCache)
+        .filter(
+            RepresentativeDeepDiveCache.profile_key == profile_key,
+            RepresentativeDeepDiveCache.topics_key == topics_key,
+        )
+        .one_or_none()
+    )
+    if record is None:
+        db.add(
+            RepresentativeDeepDiveCache(
+                profile_key=profile_key,
+                topics_key=topics_key,
+                response_json=response_json,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+    else:
+        record.response_json = response_json
+        record.created_at = datetime.now(timezone.utc)
+    db.commit()
+
+
+def representative_deep_dive_topics_key(topics: list[str]) -> str:
+    return json.dumps(sorted({topic.strip().casefold() for topic in topics if topic.strip()}))
+
+
+def representative_deep_dive_cache_is_fresh(created_at: datetime | None) -> bool:
+    if created_at is None:
+        return False
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - created_at <= REPRESENTATIVE_DEEP_DIVE_CACHE_TTL
+
+
+def representative_deep_dive_response_is_cacheable(response: RepresentativeDeepDiveResponse) -> bool:
+    if response.warning or not response.items:
+        return False
+    for item in response.items:
+        if item.caveats and any("research step failed" in caveat.casefold() for caveat in item.caveats):
+            return False
+        if len(item.sources) <= 1 and not item.money_context:
+            return False
+    return True
 
 
 def upsert_bill(db: Session, response: BillLookupResponse) -> Bill:

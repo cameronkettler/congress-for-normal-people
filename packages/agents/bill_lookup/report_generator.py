@@ -124,6 +124,50 @@ class OpenAIReportGenerator:
             return None
         return report
 
+    async def generate_representative_deep_dive_context(
+        self,
+        *,
+        representative: dict[str, Any],
+        congress_profile: dict[str, Any],
+        recent_legislation: list[dict[str, Any]],
+        finance: dict[str, Any],
+        watchlist_topics: list[str],
+    ) -> dict[str, Any] | None:
+        if not self.enabled or not self.settings.openai_web_search_enabled:
+            return None
+
+        payload = self._build_representative_deep_dive_payload(
+            representative=representative,
+            congress_profile=congress_profile,
+            recent_legislation=recent_legislation,
+            finance=finance,
+            watchlist_topics=watchlist_topics,
+        )
+        response_json: dict[str, Any] | None = None
+        for _ in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=self.settings.openai_api_timeout_seconds) as client:
+                    response = await client.post(
+                        self.endpoint,
+                        headers={
+                            "Authorization": f"Bearer {self.settings.openai_api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    response_json = response.json()
+                    break
+            except httpx.HTTPError:
+                response_json = None
+        if response_json is None:
+            return None
+
+        report = self._extract_json(response_json)
+        if not report or not report.get("summary"):
+            return None
+        return report
+
     def _build_payload(self, state: dict[str, Any]) -> dict[str, Any]:
         return {
             "model": self.settings.openai_model,
@@ -345,6 +389,135 @@ class OpenAIReportGenerator:
                     "name": "civic_pulse_representative_web_context",
                     "strict": True,
                     "schema": self._representative_position_schema(),
+                }
+            },
+        }
+
+    def _build_representative_deep_dive_payload(
+        self,
+        *,
+        representative: dict[str, Any],
+        congress_profile: dict[str, Any],
+        recent_legislation: list[dict[str, Any]],
+        finance: dict[str, Any],
+        watchlist_topics: list[str],
+    ) -> dict[str, Any]:
+        return {
+            "model": self.settings.openai_model,
+            "reasoning": {"effort": self.settings.openai_reasoning_effort},
+            "tools": [
+                {
+                    "type": "web_search",
+                    "search_context_size": self.settings.openai_web_search_context_size,
+                }
+            ],
+            "input": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Congress For Normal People's representative deep-dive analyst. Use the "
+                        "provided official congressional and campaign-finance data plus web search to summarize "
+                        "a member of Congress for a constituent. Stay nonpartisan, source-grounded, and careful. "
+                        "Do not invent stock trades, challengers, motives, scandal, or election dates. For tenure "
+                        "and next-election fields, use official member pages, state election sources, Congress.gov, "
+                        "Ballotpedia, credible local reporting, or other reliable public sources; if those sources "
+                        "conflict or are thin, say so."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "task": "Create a concise representative profile summary.",
+                            "representative": representative,
+                            "congress_profile": congress_profile,
+                            "recent_legislation": recent_legislation,
+                            "finance": finance,
+                            "watchlist_topics": watchlist_topics,
+                            "requirements": [
+                                "Use web search to confirm when the member first entered the current office if Congress.gov term data is missing.",
+                                "Use web search to identify the next election or current election status for the member, including primary/runoff/general-election context when relevant.",
+                                "If a member is retiring, lost renomination, lost a primary/runoff, or is otherwise not expected to appear in the next general election, say that clearly in the next_election field.",
+                                "Do not rely on term-cycle guesses when a current public source gives more specific election status.",
+                                "Return 2-4 public themes based on official activity or public sources.",
+                                "Return watchlist alignment only when the member's public activity overlaps the user's topics.",
+                                "Use web search to look for source-grounded campaign-finance context such as principal committee, filing status, recent receipts/disbursements, major public donor/PAC context, or fundraising caveats.",
+                                "If money details are not available from reliable public sources, say exactly what was available and what was not.",
+                                "Use cautious language for inferred themes.",
+                                "Do not claim stock trading data is available unless a source explicitly provides it.",
+                                "Return at most four source links and explain what each source contributed.",
+                            ],
+                        },
+                        default=str,
+                    ),
+                },
+            ],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "civic_pulse_representative_deep_dive",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [
+                            "summary",
+                            "serving_since",
+                            "next_election",
+                            "money_context",
+                            "public_themes",
+                            "watchlist_alignment",
+                            "sources",
+                            "caveats",
+                        ],
+                        "properties": {
+                            "summary": {"type": "string"},
+                            "serving_since": {
+                                "type": "string",
+                                "description": "Year or short phrase for when the member first entered the current office, sourced when available.",
+                            },
+                            "next_election": {
+                                "type": "string",
+                                "description": "Short sourced election-status phrase, not just a guessed cycle year.",
+                            },
+                            "money_context": {
+                                "type": "string",
+                                "description": "Two or three source-grounded sentences about campaign finance or money context, including caveats when data is thin.",
+                            },
+                            "public_themes": {
+                                "type": "array",
+                                "maxItems": 4,
+                                "items": {"type": "string"},
+                            },
+                            "watchlist_alignment": {
+                                "type": "array",
+                                "maxItems": 4,
+                                "items": {"type": "string"},
+                            },
+                            "sources": {
+                                "type": "array",
+                                "maxItems": 4,
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["title", "url", "description"],
+                                    "properties": {
+                                        "title": {"type": "string"},
+                                        "url": {"type": "string"},
+                                        "description": {
+                                            "type": "string",
+                                            "description": "Short explanation of what this source is and what it supported.",
+                                        },
+                                    },
+                                },
+                            },
+                            "caveats": {
+                                "type": "array",
+                                "maxItems": 4,
+                                "items": {"type": "string"},
+                            },
+                        },
+                    },
                 }
             },
         }

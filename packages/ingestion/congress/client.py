@@ -152,6 +152,58 @@ class CongressClient:
 
         return senators[:2]
 
+    async def get_member_profile(self, representative: RepresentativeRecord) -> dict[str, Any]:
+        if not self.settings.congress_api_key or not representative.bioguide_id:
+            return {
+                "terms": [],
+                "committees": [],
+                "serving_since": None,
+                "official_url": representative.official_url,
+            }
+
+        url = f"{self.base_url}/member/{representative.bioguide_id}"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(self.settings.congress_api_timeout_seconds)) as client:
+            response = await client.get(url, params=self._request_params())
+            response.raise_for_status()
+            member = response.json().get("member", {})
+
+        terms = self._member_terms(member)
+        committees = self._member_committees(member)
+        return {
+            "terms": terms,
+            "committees": committees,
+            "serving_since": self._serving_since(terms),
+            "official_url": member.get("officialUrl") or representative.official_url,
+        }
+
+    async def list_member_sponsored_legislation(
+        self,
+        representative: RepresentativeRecord,
+        *,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        if not self.settings.congress_api_key or not representative.bioguide_id:
+            return []
+
+        url = f"{self.base_url}/member/{representative.bioguide_id}/sponsored-legislation"
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(self.settings.congress_recent_api_timeout_seconds)) as client:
+                response = await client.get(
+                    url,
+                    params={**self._request_params(), "limit": limit},
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except (httpx.TimeoutException, httpx.HTTPError):
+            return []
+
+        items = payload.get("sponsoredLegislation") or payload.get("bills") or []
+        if isinstance(items, dict):
+            items = items.get("item", [])
+        if not isinstance(items, list):
+            return []
+        return [self._normalize_member_legislation(item) for item in items[:limit]]
+
     async def list_bill_cosponsors(self, bill_id: str) -> list[dict[str, Any]]:
         if not self.settings.congress_api_key:
             return []
@@ -386,7 +438,7 @@ class CongressClient:
         return self.classify_topic(fallback_text)
 
     def _representative_from_member(self, member: dict[str, Any], chamber: str) -> RepresentativeRecord:
-        terms = member.get("terms", {}).get("item", []) if isinstance(member.get("terms"), dict) else []
+        terms = self._member_terms(member)
         latest_term = terms[-1] if terms else {}
         return RepresentativeRecord(
             name=member.get("directOrderName") or member.get("name") or member.get("invertedOrderName") or "Unknown member",
@@ -404,8 +456,52 @@ class CongressClient:
             return None
         return f"https://www.congress.gov/img/member/{bioguide_id.strip().lower()}_200.jpg"
 
+    def _member_terms(self, member: dict[str, Any]) -> list[dict[str, Any]]:
+        terms = member.get("terms", {}).get("item", []) if isinstance(member.get("terms"), dict) else member.get("terms", [])
+        if isinstance(terms, dict):
+            terms = terms.get("item", [])
+        return terms if isinstance(terms, list) else []
+
+    def _member_committees(self, member: dict[str, Any]) -> list[str]:
+        raw = member.get("committees") or member.get("committeeAssignments") or []
+        if isinstance(raw, dict):
+            raw = raw.get("item", [])
+        if not isinstance(raw, list):
+            return []
+        committees: list[str] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or item.get("committeeName") or item.get("systemCode")
+            if name:
+                committees.append(str(name))
+        return committees[:6]
+
+    def _serving_since(self, terms: list[dict[str, Any]]) -> str | None:
+        dates = [
+            str(term.get("startYear") or term.get("startDate") or "")
+            for term in terms
+            if isinstance(term, dict) and (term.get("startYear") or term.get("startDate"))
+        ]
+        return min(dates) if dates else None
+
+    def _normalize_member_legislation(self, item: dict[str, Any]) -> dict[str, Any]:
+        item = self._unwrap_item(item, "sponsoredLegislation")
+        congress = str(item.get("congress") or "")
+        bill_type = str(item.get("type") or item.get("billType") or "").lower()
+        number = str(item.get("number") or item.get("billNumber") or "")
+        latest_action = item.get("latestAction") if isinstance(item.get("latestAction"), dict) else {}
+        return {
+            "title": item.get("title") or item.get("shortTitle") or f"{bill_type.upper()} {number}".strip(),
+            "congress_bill_id": f"{bill_type}-{number}-{congress}".strip("-"),
+            "introduced_date": item.get("introducedDate"),
+            "latest_action": latest_action.get("text") or item.get("latestAction") or "",
+            "policy_area": (item.get("policyArea") or {}).get("name") if isinstance(item.get("policyArea"), dict) else "",
+            "url": item.get("url"),
+        }
+
     def _member_chamber(self, member: dict[str, Any]) -> str:
-        terms = member.get("terms", {}).get("item", []) if isinstance(member.get("terms"), dict) else []
+        terms = self._member_terms(member)
 
         if not isinstance(terms, list):
             terms = []

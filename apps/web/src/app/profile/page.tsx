@@ -17,6 +17,7 @@ type RepresentativeRecord = {
   party: string;
   state: string;
   district?: string | null;
+  bioguide_id?: string | null;
   official_url?: string | null;
   photo_url?: string | null;
 };
@@ -291,7 +292,7 @@ export default function ProfilePage() {
                       <MemberAvatar name={representative.name} photoUrl={representative.photo_url} />
                       <div className="min-w-0">
                         <h3 className="text-sm font-semibold">
-                          {representative.name}
+                          {displayPersonName(representative.name)}
                         </h3>
 
                         <p className="mt-1 text-sm text-slate-600">
@@ -356,7 +357,7 @@ function authHeaders(token: string) {
 }
 
 function MemberAvatar({ name, photoUrl }: { name: string; photoUrl?: string | null }) {
-  const initials = name
+  const initials = displayPersonName(name)
     .split(/[,\s]+/)
     .filter(Boolean)
     .slice(0, 2)
@@ -381,6 +382,24 @@ function MemberAvatar({ name, photoUrl }: { name: string; photoUrl?: string | nu
       {initials || <UserRound size={16} aria-hidden="true" />}
     </span>
   );
+}
+
+function displayPersonName(value: string) {
+  const text = value.replace(/\s+/g, " ").trim();
+  const bracket = text.match(/\s*(\[[^\]]+\])\s*$/)?.[1] ?? "";
+  const withoutBracket = bracket ? text.replace(/\s*\[[^\]]+\]\s*$/, "").trim() : text;
+  const titleMatch = withoutBracket.match(/^(Rep\.|Sen\.|Representative|Senator)\s+(.+)$/i);
+  const title = titleMatch?.[1] ?? "";
+  const name = titleMatch?.[2] ?? withoutBracket;
+
+  if (!name.includes(",")) return [title, name, bracket].filter(Boolean).join(" ");
+
+  const [last, rest] = name.split(",", 2).map((part) => part.trim());
+  const suffixes = new Set(["jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v"]);
+  const restParts = rest.split(/\s+/).filter(Boolean);
+  const suffix = restParts.filter((part) => suffixes.has(part.toLowerCase()));
+  const given = restParts.filter((part) => !suffixes.has(part.toLowerCase()));
+  return [title, ...given, last, ...suffix, bracket].filter(Boolean).join(" ");
 }
 
 function partyColor(party: string) {

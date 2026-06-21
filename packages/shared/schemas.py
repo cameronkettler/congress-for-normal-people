@@ -1,7 +1,9 @@
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from packages.shared.names import display_person_name
 
 
 class SourceReference(BaseModel):
@@ -24,6 +26,11 @@ class BillRecord(BaseModel):
     topic: str = "Uncategorized"
     sources: list[SourceReference] = Field(default_factory=list)
 
+    @field_validator("sponsor")
+    @classmethod
+    def normalize_sponsor_name(cls, value: str) -> str:
+        return display_person_name(value)
+
 
 class BillLookupRequest(BaseModel):
     bill_id: str = Field(..., examples=["hr-1234-118"])
@@ -38,6 +45,11 @@ class RepresentativeRecord(BaseModel):
     bioguide_id: str | None = None
     official_url: str | None = None
     photo_url: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_representative_name(cls, value: str) -> str:
+        return display_person_name(value)
 
 
 class RepresentativeBillSignal(BaseModel):
@@ -127,4 +139,33 @@ class RepresentativeMapGeometryResponse(BaseModel):
     congressional_district: str = ""
     house_geometry: dict[str, Any] = Field(default_factory=dict)
     state_geometry: dict[str, Any] = Field(default_factory=dict)
+    warning: str | None = None
+
+
+class RepresentativeActivityItem(BaseModel):
+    title: str
+    congress_bill_id: str = ""
+    introduced_date: str | None = None
+    latest_action: str = ""
+    policy_area: str = ""
+    url: str | None = None
+
+
+class RepresentativeDeepDive(BaseModel):
+    representative: RepresentativeRecord
+    serving_since: str | None = None
+    next_election: str = "Estimate unavailable"
+    committees: list[str] = Field(default_factory=list)
+    recent_legislation: list[RepresentativeActivityItem] = Field(default_factory=list)
+    finance: dict[str, Any] = Field(default_factory=dict)
+    money_context: str = ""
+    public_themes: list[str] = Field(default_factory=list)
+    watchlist_alignment: list[str] = Field(default_factory=list)
+    summary: str = ""
+    caveats: list[str] = Field(default_factory=list)
+    sources: list[SourceReference] = Field(default_factory=list)
+
+
+class RepresentativeDeepDiveResponse(BaseModel):
+    items: list[RepresentativeDeepDive]
     warning: str | None = None

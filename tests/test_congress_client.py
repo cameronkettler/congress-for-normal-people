@@ -293,6 +293,8 @@ def test_list_recent_bills_uses_current_congress_endpoint(monkeypatch):
 
     assert _RecentBillsAsyncClient.last_url == "https://api.congress.gov/v3/bill/119"
     assert _RecentBillsAsyncClient.last_params["offset"] == 0
+    assert "sort" not in _RecentBillsAsyncClient.last_params
+    assert _RecentBillsAsyncClient.last_params["fromDateTime"].endswith("Z")
     assert result[0].congress_bill_id == "hr-22-119"
 
 

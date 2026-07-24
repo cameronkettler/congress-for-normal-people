@@ -32,8 +32,14 @@ class Settings(BaseSettings):
     serpapi_timeout_seconds: float = 20.0
     rep_position_search_results: int = 5
     monitoring_topics: str = DEFAULT_MONITORING_TOPICS
-    monitoring_poll_limit: int = 10
-    monitoring_poll_max_fetch: int = 50
+    monitoring_poll_limit: int = 250
+    monitoring_poll_max_fetch: int = 4000
+    monitoring_poll_lookback_days: int = 30
+    briefing_default_hours: int = 24
+    briefing_max_items: int = 6
+    briefing_max_candidates: int = 30
+    briefing_cache_hours: int = 6
+    briefing_generation_version: str = "policy-briefing-v4"
     job_token: str | None = None
     session_token_bytes: int = 32
     password_hash_iterations: int = 210000

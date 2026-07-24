@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy import JSON, Column, DateTime, Integer, String, Text, func
 
@@ -33,6 +33,65 @@ class BillMonitoring(Base):
     processed: Mapped[bool] = mapped_column(Boolean, default=False)
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     notification_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class BillChangeEvent(Base):
+    __tablename__ = "bill_change_events"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_bill_change_event_fingerprint"),
+        Index("ix_bill_change_events_topic_observed", "topic", "observed_at"),
+        Index("ix_bill_change_events_bill_observed", "congress_bill_id", "observed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    congress_bill_id: Mapped[str] = mapped_column(String(64), index=True)
+    event_type: Mapped[str] = mapped_column(String(48), index=True)
+    event_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str] = mapped_column(Text)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_label: Mapped[str] = mapped_column(String(160), default="Congress.gov")
+    topic: Mapped[str] = mapped_column(String(120), index=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    fingerprint: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+
+
+class PolicyBriefing(Base):
+    __tablename__ = "policy_briefings"
+    __table_args__ = (
+        UniqueConstraint("user_id", "period_start", "period_end", "topics_key", "version", name="uq_policy_briefing_generation"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    status: Mapped[str] = mapped_column(String(24), default="complete")
+    warning: Mapped[str] = mapped_column(Text, default="")
+    topics_key: Mapped[str] = mapped_column(Text)
+    version: Mapped[str] = mapped_column(String(64))
+    response_json: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class PolicyBriefingItem(Base):
+    __tablename__ = "policy_briefing_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    briefing_id: Mapped[int] = mapped_column(ForeignKey("policy_briefings.id"), index=True)
+    topic: Mapped[str] = mapped_column(String(120), index=True)
+    headline: Mapped[str] = mapped_column(Text)
+    change_summary: Mapped[str] = mapped_column(Text)
+    why_it_matters: Mapped[str] = mapped_column(Text)
+    significance: Mapped[str] = mapped_column(String(24))
+    significance_score: Mapped[int] = mapped_column(Integer)
+    confidence: Mapped[str] = mapped_column(String(24))
+    display_order: Mapped[int] = mapped_column(Integer)
+    bill_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    event_ids_json: Mapped[list[int]] = mapped_column(JSON, default=list)
+    sources_json: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    caveats_json: Mapped[list[str]] = mapped_column(JSON, default=list)
 
 
 class RepresentativeSearchCache(Base):

@@ -2,10 +2,14 @@
 
 Congress For Normal People is an agentic federal-legislation app that turns bill records into plain-English political context. It combines a Next.js frontend, a FastAPI backend, PostgreSQL persistence, account-scoped monitoring topics, location-based representative lookup, and provider integrations for Congress.gov, OpenFEC, Lobbying Disclosure Act filings, Census geocoding, optional SerpAPI, and OpenAI.
 
-The goal is simple: search a bill, understand what it does, see who may care about it, and get representative-specific context without reading a dozen government pages first.
+The goal is simple: see what changed across the policy issues you care about, understand why it matters, and drill into the underlying bills and official evidence.
 
 ## Current Features
 
+- A personalized, topic-grouped policy briefing ranked by meaningful congressional changes.
+- Immutable bill-change events captured for both new and previously tracked legislation.
+- Grounded “What changed / Why it matters / Underlying bills” cards with deterministic fallbacks when AI is disabled.
+- Authenticated `GET /api/briefing` and NDJSON `GET /api/briefing/stream` endpoints with per-user caching.
 - Bill lookup by bill number or natural-language bill query.
 - Human-readable bill labels, such as `H.Res. 11 (119th Congress)` and `S.Res. 2 (119th Congress)`, while internal cache/API IDs remain normalized.
 - Plain-language political read with structured sections:
@@ -30,6 +34,8 @@ The goal is simple: search a bill, understand what it does, see who may care abo
 - Representative Deep Dive page for member profile context, recent sponsored legislation, campaign-finance coverage, election timing, public themes, and watchlist alignment.
 - About page explaining how to use the application.
 - Graceful handling for slow or unavailable external providers.
+
+Briefings are cached by user, enabled topics, period, and generation version. A new relevant event or an interests change invalidates reuse. The application currently creates new tables at startup; production deployments should adopt Alembic migrations before rolling schema changes across multiple instances.
 
 ## Tech Stack
 

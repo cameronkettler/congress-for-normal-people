@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
 from typing import Any
 
@@ -36,6 +36,15 @@ class CongressClient:
         self.settings = settings or get_settings()
         self.last_recent_error: str | None = None
 
+    @staticmethod
+    def _parse_date(value: object) -> date | None:
+        if not value:
+            return None
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except ValueError:
+            return None
+
     async def get_bill(self, bill_id: str) -> BillRecord:
         if not self.settings.congress_api_key:
             return self._demo_bill(bill_id)
@@ -51,7 +60,8 @@ class CongressClient:
             summary = await self._get_bill_summary(client, congress, bill_type, number, payload)
 
         title = payload.get("title") or payload.get("shortTitle") or f"{bill_type.upper()} {number}"
-        latest_action = (payload.get("latestAction") or {}).get("text", "No latest action available")
+        latest_action_payload = payload.get("latestAction") or {}
+        latest_action = latest_action_payload.get("text", "No latest action available")
         sponsor_payload = self._first_item(payload.get("sponsors")) or {}
         sponsor = sponsor_payload.get("fullName", "Unknown sponsor")
         sponsor_bioguide_id = self._bioguide_id(sponsor_payload)
@@ -67,6 +77,7 @@ class CongressClient:
             sponsor_photo_url=self._member_photo_url(sponsor_bioguide_id),
             introduced_date=introduced_date,
             latest_action=latest_action,
+            latest_action_date=self._parse_date(latest_action_payload.get("actionDate")),
             status=payload.get("status", "introduced"),
             topic=self._topic_from_payload(payload, f"{title} {summary}"),
             sources=[
@@ -355,7 +366,10 @@ class CongressClient:
                     params={
                         "api_key": self.settings.congress_api_key,
                         "format": "json",
-                        "sort": "updateDate+desc",
+                        "fromDateTime": (
+                            datetime.now(timezone.utc)
+                            - timedelta(days=max(1, self.settings.monitoring_poll_lookback_days))
+                        ).strftime("%Y-%m-%dT%H:%M:%SZ"),
                         "limit": limit,
                         "offset": offset,
                     },
@@ -382,6 +396,7 @@ class CongressClient:
                     sponsor="Unknown",
                     introduced_date=None,
                     latest_action=(item.get("latestAction") or {}).get("text", "Recently updated"),
+                    latest_action_date=self._parse_date((item.get("latestAction") or {}).get("actionDate")),
                     status="introduced",
                     topic=self.classify_topic(item.get("title", "")),
                     sources=[SourceReference(label="Congress.gov recent bills", url=url, confidence="high")],

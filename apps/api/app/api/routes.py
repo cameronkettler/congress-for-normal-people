@@ -21,12 +21,14 @@ from packages.agents.bill_lookup import BillLookupWorkflow, ProviderLookupError
 from packages.agents.bill_lookup.input_resolver import BillInputResolutionError
 from packages.agents.bill_lookup.report_generator import OpenAIReportGenerator
 from packages.agents.bill_monitoring import BillMonitoringWorkflow
+from packages.agents.policy_briefing import PolicyBriefingRequest, PolicyBriefingWorkflow
 from packages.agents.representative_deep_dive import RepresentativeDeepDiveWorkflow
 from packages.db import get_session
-from packages.db.models import Bill, BillMonitoring, BillPositionSearchCache, GeneratedReport, ReportCache, RepresentativeDeepDiveCache, RepresentativeSearchCache, User, UserProfile, UserSession, UserTopicPreference
+from packages.db.models import Bill, BillChangeEvent, BillMonitoring, BillPositionSearchCache, GeneratedReport, PolicyBriefing, ReportCache, RepresentativeDeepDiveCache, RepresentativeSearchCache, User, UserProfile, UserSession, UserTopicPreference
 from packages.ingestion.congress import CongressClient
 from packages.ingestion.search import SearchResult, SerpApiClient
 from packages.jobs.poll_new_bills import poll_new_bills
+from packages.jobs.poll_new_bills.job import backfill_missing_event_dates
 from packages.shared.config import get_settings
 from packages.ingestion.census import CensusGeocoderClient, CensusGeometryClient
 from packages.shared.schemas import (
@@ -37,6 +39,7 @@ from packages.shared.schemas import (
     HotTopicsResponse,
     MonitoringBill,
     MonitoringRecentResponse,
+    PolicyBriefingResponse,
     RepresentativeBillSignal,
     RepresentativeDeepDive,
     RepresentativeDeepDiveResponse,
@@ -48,6 +51,69 @@ from packages.shared.schemas import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+@router.get("/briefing", response_model=PolicyBriefingResponse)
+async def policy_briefing(
+    period: str = "day",
+    max_items: int = 6,
+    force_refresh: bool = False,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    if period not in {"day", "week", "month"}:
+        raise HTTPException(status_code=422, detail="period must be day, week, or month")
+    settings = get_settings()
+    max_items = min(12, max(1, max_items))
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days={"day": 1, "week": 7, "month": 30}[period])
+    topics = sorted(enabled_topics_for_user(db, user))
+    topics_key = "|".join(topics)
+    if not force_refresh:
+        cached = cached_policy_briefing(db, user.id, topics_key, start)
+        if cached:
+            response = PolicyBriefingResponse.model_validate(cached.response_json)
+            response.is_cached = True
+            return response
+    try:
+        await backfill_missing_event_dates(db, CongressClient(settings), limit=settings.briefing_max_candidates)
+    except Exception:
+        logger.warning("briefing action-date backfill failed", extra={"user_id": user.id})
+    response = PolicyBriefingWorkflow(settings).run(db, PolicyBriefingRequest(user_id=user.id, period_start=start, period_end=end, max_items=max_items, force_refresh=force_refresh))
+    record = PolicyBriefing(user_id=user.id, period_start=start, period_end=end, status="partial" if response.warning and response.total_items else "complete", warning=response.warning or "", topics_key=topics_key, version=settings.briefing_generation_version, response_json=response.model_dump(mode="json"))
+    db.add(record)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+    return response
+
+
+@router.get("/briefing/stream")
+async def policy_briefing_stream(
+    period: str = "day",
+    max_items: int = 6,
+    force_refresh: bool = False,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_session),
+):
+    async def events():
+        yield stream_event({"type": "progress", "step": "load_preferences", "message": "Loading your policy interests", "detail": "Using your enabled briefing topics."})
+        yield stream_event({"type": "progress", "step": "find_changes", "message": "Finding meaningful changes", "detail": "Ranking tracked official congressional actions."})
+        response = await policy_briefing(period=period, max_items=max_items, force_refresh=force_refresh, user=user, db=db)
+        yield stream_event({"type": "progress", "step": "explain_changes", "message": "Explaining why they matter", "detail": "Building grounded plain-language summaries from stored evidence."})
+        yield stream_event({"type": "result", "data": response.model_dump(mode="json")})
+    return StreamingResponse(events(), media_type="application/x-ndjson")
+
+
+def cached_policy_briefing(db: Session, user_id: int, topics_key: str, period_start: datetime):
+    settings = get_settings()
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.briefing_cache_hours)
+    row = db.query(PolicyBriefing).filter(PolicyBriefing.user_id == user_id, PolicyBriefing.topics_key == topics_key, PolicyBriefing.version == settings.briefing_generation_version, PolicyBriefing.generated_at >= cutoff, PolicyBriefing.period_start >= period_start - timedelta(minutes=5)).order_by(PolicyBriefing.generated_at.desc()).first()
+    if not row:
+        return None
+    newest_event = db.query(BillChangeEvent).filter(BillChangeEvent.topic.in_(topics_key.split("|") if topics_key else []), BillChangeEvent.observed_at > row.generated_at).first()
+    return None if newest_event else row
 
 
 HOT_TOPIC_BILLS = [
@@ -499,7 +565,7 @@ async def stream_representative_deep_dive(user: User, db: Session):
                     "type": "progress",
                     "step": "cache_hit",
                     "label": "Loaded cached representative deep dive",
-                    "detail": "Using a saved deep dive from the last 24 hours.",
+                    "detail": "Using a saved deep dive from the last 7 days.",
                 }
             )
             yield stream_event({"type": "result", "data": cached_response.model_dump(mode="json")})
@@ -1813,7 +1879,7 @@ def enabled_topics_for_user(db: Session, user: User) -> set[str]:
 
 
 REPORT_CACHE_TTL = timedelta(days=1)
-REPRESENTATIVE_DEEP_DIVE_CACHE_TTL = timedelta(days=1)
+REPRESENTATIVE_DEEP_DIVE_CACHE_TTL = timedelta(days=7)
 
 
 def cached_report_response(

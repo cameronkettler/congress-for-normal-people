@@ -22,6 +22,7 @@ class BillRecord(BaseModel):
     sponsor_photo_url: str | None = None
     introduced_date: date | None = None
     latest_action: str
+    latest_action_date: date | None = None
     status: str
     topic: str = "Uncategorized"
     sources: list[SourceReference] = Field(default_factory=list)
@@ -110,6 +111,57 @@ class MonitoringBill(BaseModel):
 
 class MonitoringRecentResponse(BaseModel):
     items: list[MonitoringBill]
+    warning: str | None = None
+
+
+class BillBriefReference(BaseModel):
+    congress_bill_id: str
+    display_id: str
+    title: str
+    status: str
+    latest_action: str
+    url: str | None = None
+
+
+class PolicyChangeEvidence(BaseModel):
+    event_id: int | None = None
+    event_type: str
+    event_date: datetime | None = None
+    description: str
+    source: SourceReference
+
+
+class PolicyBriefingItem(BaseModel):
+    id: int | None = None
+    topic: str
+    headline: str
+    change_summary: str
+    why_it_matters: str
+    what_happens_next: str
+    significance: str
+    significance_score: int
+    confidence: str
+    bills: list[BillBriefReference]
+    evidence: list[PolicyChangeEvidence]
+    sources: list[SourceReference]
+    caveats: list[str] = Field(default_factory=list)
+
+
+class PolicyBriefingTopicGroup(BaseModel):
+    topic: str
+    items: list[PolicyBriefingItem]
+    has_major_change: bool = False
+
+
+class PolicyBriefingResponse(BaseModel):
+    period_start: datetime
+    period_end: datetime
+    generated_at: datetime
+    topics: list[str]
+    groups: list[PolicyBriefingTopicGroup]
+    total_items: int
+    is_personalized: bool
+    is_cached: bool = False
     warning: str | None = None
 
 

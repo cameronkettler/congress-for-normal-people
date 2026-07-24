@@ -19,6 +19,7 @@ import {
   UserRound
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { PolicyBriefing } from "../components/briefing/PolicyBriefing";
 
 type LookupResponse = {
   bill: {
@@ -766,8 +767,15 @@ export default function Home() {
         </div>
       </header>
 
+      <PolicyBriefing
+        apiBase={apiBase}
+        token={authToken!}
+        onSelectBill={(id) => { void runLookup(id); window.setTimeout(() => document.getElementById("bill-search")?.scrollIntoView({ behavior: "smooth" }), 50); }}
+        onEditTopics={() => document.getElementById("topic-preferences")?.scrollIntoView({ behavior: "smooth" })}
+      />
+
       <section className="mx-auto grid max-w-7xl gap-5 px-5 py-5 lg:grid-cols-[1.2fr_0.8fr]">
-        <div className="rounded border border-line bg-white">
+        <div id="bill-search" className="rounded border border-line bg-white">
           <div className="flex items-center justify-between border-b border-line px-4 py-3">
             <div className="flex items-center gap-2">
               <FileSearch size={18} aria-hidden="true" />
@@ -1129,7 +1137,7 @@ function WatchlistCard({
   onSelectBill: (billId: string) => Promise<void>;
 }) {
   return (
-    <div className="rounded border border-line bg-white">
+    <div id="topic-preferences" className="rounded border border-line bg-white">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
         <div className="flex items-center gap-2">
           <Bell size={18} aria-hidden="true" />
